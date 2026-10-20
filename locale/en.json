@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "API Balance",
+    "description": "Shows the DeepSeek account balance and this session's spend under the composer, updated as requests settle."
+  }
+}

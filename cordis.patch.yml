@@ -1,0 +1,5 @@
+# Bundle patch for the API balance widget: one Loader entry named after the package.
+- insert:
+    - id: api-balance-widget
+      name: '@breey05/dsh-balance-widget'
+

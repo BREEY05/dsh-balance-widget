@@ -1,0 +1,11 @@
+# Editors and OS
+.DS_Store
+Thumbs.db
+*.swp
+
+# Installed dependencies (this package has none, but clones may add some)
+node_modules/
+
+# Logs and local artifacts
+*.log
+*.tmp
