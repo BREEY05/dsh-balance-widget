@@ -7,7 +7,21 @@ users install it by Git URL (see [README.md](README.md#install)).
 - Package name: `@breey05/dsh-balance-widget` (scoped because the unscoped npm name
   `dsh-balance-widget` belongs to a different plugin)
 - Release tag: `v1.0.0`
-- Install spec used in the README: `git+https://github.com/BREEY05/dsh-balance-widget.git#v1.0.0`
+- Install specs: `@breey05/dsh-balance-widget@1.0.0` (npm) or
+  `git+https://github.com/BREEY05/dsh-balance-widget.git#v1.0.0` (Git)
+
+## Published releases
+
+| Version | Registry | Published |
+|---|---|---|
+| `1.0.0` | npm — <https://www.npmjs.com/package/@breey05/dsh-balance-widget> | 2026-10-21 |
+
+Publishing notes for this account: npm now requires **2FA (OTP)** or a granular access token
+with **Bypass 2FA** to publish; a plain `npm login` session token is refused with HTTP 403.
+Direct publishing with a bypass-2FA token is scheduled for removal in **January 2027** — after
+that use `npm stage publish` plus an approval step, or enable 2FA. A new package's first
+publish is accepted with HTTP 202 and becomes readable a few minutes later; mirrors sync
+afterwards (the Tencent mirror had it within minutes, npmmirror later).
 
 ## Publish a release
 
