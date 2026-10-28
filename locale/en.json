@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "API Balance",
-    "description": "Shows the DeepSeek account balance and this session's spend under the composer, updated as requests settle."
+    "description": "Follows the selected model provider to show AIGoCode, Taffy or DeepSeek account balance and observed spend."
   }
 }

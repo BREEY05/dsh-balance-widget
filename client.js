@@ -9,9 +9,9 @@ window.__ModuleLoader__.load({
     /** Identifies our stylesheet element and is unique to this package. */
     const STYLE_TAG = '@breey05/dsh-balance-widget/api-balance.css';
     /** localStorage key for per-day observed spend. */
-    const TODAY_KEY = 'dsh.api-balance.today.v1';
+    const TODAY_KEY = 'dsh.api-balance.providers.today.v2.';
     /** sessionStorage key for per-session observed spend, so a reload keeps the label honest. */
-    const SESSIONS_KEY = 'dsh.api-balance.sessions.v1';
+    const SESSIONS_KEY = 'dsh.api-balance.providers.sessions.v2.';
     /** Idle polling cadence: the Platform account summary is rate-limited, so this is slow. */
     const POLL_MS = 300000;
     /** Reads scheduled after a new chat node settles (usage is billed at request completion). */
@@ -209,10 +209,10 @@ window.__ModuleLoader__.load({
       return total;
     }
 
-    function readToday() {
+    function readToday(provider) {
       const fallback = { date: localDateKey(), micro: {} };
       try {
-        const raw = window.localStorage.getItem(TODAY_KEY);
+        const raw = window.localStorage.getItem(TODAY_KEY + provider);
         if (raw === null) return fallback;
         const parsed = JSON.parse(raw);
         if (parsed === null || typeof parsed !== 'object') return fallback;
@@ -229,18 +229,31 @@ window.__ModuleLoader__.load({
       }
     }
 
-    function writeToday(today) {
+    function writeToday(provider, today, currency, increment) {
+      const fresh = readToday(provider);
+      const localBefore = today.date === fresh.date ? today.micro[currency] ?? 0 : 0;
+      fresh.micro[currency] = (fresh.micro[currency] ?? 0) + increment;
       try {
-        window.localStorage.setItem(TODAY_KEY, JSON.stringify({ date: today.date, micro: today.micro }));
+        // Fresh read preserves sequential writes by other stores. localStorage has no
+        // cross-tab transaction: simultaneous observations can still race or duplicate.
+        window.localStorage.setItem(TODAY_KEY + provider, JSON.stringify(fresh));
+        today.date = fresh.date;
+        today.micro = fresh.micro;
       } catch {
+        today.date = fresh.date;
+        today.micro = { ...today.micro, [currency]: Math.max(localBefore + increment, fresh.micro[currency]) };
         // Storage may be unavailable; the daily figure is then page-local only.
       }
     }
 
-    function readSessionSpend() {
+    // Remember each store's committed amounts without adding fields to persisted JSON.
+    const persistedSessions = new WeakMap();
+
+    function readSessionSpend(provider) {
       const stored = new Map();
+      persistedSessions.set(stored, new Map());
       try {
-        const raw = window.sessionStorage.getItem(SESSIONS_KEY);
+        const raw = window.sessionStorage.getItem(SESSIONS_KEY + provider);
         if (raw === null) return stored;
         const parsed = JSON.parse(raw);
         if (parsed === null || typeof parsed !== 'object') return stored;
@@ -255,21 +268,33 @@ window.__ModuleLoader__.load({
       } catch {
         return new Map();
       }
+      persistedSessions.set(stored, new Map([...stored].map(([id, amounts]) => [id, new Map(amounts)])));
       return stored;
     }
 
-    function writeSessionSpend(bySession) {
+    function writeSessionSpend(provider, bySession) {
+      const previous = persistedSessions.get(bySession) ?? new Map();
+      const merged = readSessionSpend(provider);
+      for (const [sessionId, amounts] of bySession) {
+        for (const [currency, amount] of amounts) {
+          const delta = amount - (previous.get(sessionId)?.get(currency) ?? 0);
+          if (delta <= 0) continue;
+          let target = merged.get(sessionId);
+          if (target === undefined) merged.set(sessionId, target = new Map());
+          target.set(currency, (target.get(currency) ?? 0) + delta);
+        }
+      }
       try {
         const payload = {};
-        let count = 0;
-        for (const [sessionId, micro] of bySession) {
-          if (count >= 50) break;
-          payload[sessionId] = Object.fromEntries(micro);
-          count += 1;
+        for (const [sessionId, amounts] of [...merged].slice(-50)) {
+          payload[sessionId] = Object.fromEntries(amounts);
         }
-        window.sessionStorage.setItem(SESSIONS_KEY, JSON.stringify(payload));
+        window.sessionStorage.setItem(SESSIONS_KEY + provider, JSON.stringify(payload));
+        bySession.clear();
+        for (const [sessionId, amounts] of merged) bySession.set(sessionId, amounts);
+        persistedSessions.set(bySession, new Map([...bySession].map(([id, amounts]) => [id, new Map(amounts)])));
       } catch {
-        // Storage may be unavailable; the per-session figure is then page-local only.
+        // Keep the old commit baseline so the next write retries these increments.
       }
     }
 
@@ -279,17 +304,26 @@ window.__ModuleLoader__.load({
      * Page-lifetime holder of the latest balance reading, the per-session and per-day spend
      * ledgers, and the read scheduler. The component only renders it.
      */
-    function createStore(ctx) {
+    const PROVIDERS = {
+      aigocode: { label: 'AIGoCode', path: '/api/aigocode-usage' },
+      tafy: { label: 'Taffy', path: '/api/taffy-usage' },
+      'deepseek-account': { label: 'DeepSeek Account', account: true },
+    };
+
+    function createStore(ctx, provider) {
       let listeners = new Set();
       let timers = new Set();
       let inflight = null;
       let retryCount = 0;
       let lastReadAt = 0;
       let snapshot = null;
+      let disposed = false;
 
-      const today = readToday();
+      const today = readToday(provider);
       const state = {
-        phase: 'loading',
+        phase: PROVIDERS[provider] ? 'loading' : 'unavailable',
+        provider,
+        providerLabel: PROVIDERS[provider]?.label ?? provider ?? '—',
         balances: [],
         recharge: [],
         bonus: [],
@@ -297,7 +331,7 @@ window.__ModuleLoader__.load({
         updatedAt: null,
         message: null,
         sessionId: undefined,
-        sessionSpent: readSessionSpend(),
+        sessionSpent: readSessionSpend(provider),
         today,
         flash: null,
         flashAt: 0,
@@ -310,6 +344,8 @@ window.__ModuleLoader__.load({
         const session = state.sessionId !== undefined ? state.sessionSpent.get(state.sessionId) : undefined;
         return Object.freeze({
           phase: state.phase,
+          provider: state.provider,
+          providerLabel: state.providerLabel,
           balances: state.balances,
           recharge: state.recharge,
           bonus: state.bonus,
@@ -341,6 +377,7 @@ window.__ModuleLoader__.load({
       }
 
       function later(fn, ms) {
+        if (disposed) return;
         const id = setTimeout(() => {
           timers.delete(id);
           fn();
@@ -381,8 +418,7 @@ window.__ModuleLoader__.load({
 
       function addToday(currency, micro) {
         if (state.today.date !== localDateKey()) state.today = { date: localDateKey(), micro: {} };
-        state.today.micro[currency] = (state.today.micro[currency] ?? 0) + micro;
-        writeToday(state.today);
+        writeToday(provider, state.today, currency, micro);
       }
 
       function applyBalances(balances) {
@@ -404,7 +440,7 @@ window.__ModuleLoader__.load({
               session.set(currency, (session.get(currency) ?? 0) + drop);
               addToday(currency, drop);
             }
-            writeSessionSpend(state.sessionSpent);
+            writeSessionSpend(provider, state.sessionSpent);
             state.flash = { currency: deltas[0][0], micro: deltas[0][1] };
             state.flashAt = Date.now();
             scheduleFlashClear();
@@ -414,6 +450,7 @@ window.__ModuleLoader__.load({
       }
 
       function succeed(outcome) {
+        if (disposed) return;
         const recharge = normalizeWallets(outcome.value);
         const bonus = normalizeWallets(outcome.bonusWallets);
         const balances = mergeWallets(recharge, bonus);
@@ -438,28 +475,44 @@ window.__ModuleLoader__.load({
       }
 
       async function readOnce() {
-        let account;
-        try {
-          account = ctx.remote.account;
-        } catch (error) {
-          fail('unavailable', describeError(error));
+        const adapter = PROVIDERS[provider];
+        if (!adapter) {
+          state.phase = 'unavailable';
+          state.message = '当前供应商尚未接入余额接口 / No balance adapter: ' + (provider ?? 'unknown');
           return;
         }
-        if (account === undefined || account === null || typeof account.getBalance !== 'function') {
-          fail('unavailable', 'remote.account.getBalance is not mounted in this client');
+        if (adapter.account) {
+          const outcome = unwrapRemoteResult(await ctx.remote.account.getBalance(accountMetadata()));
+          if (outcome?.status === 'failed') {
+            fail('error', 'DeepSeek account balance request failed');
+          } else if (outcome === null || outcome?.status === 'signed-out') {
+            state.phase = 'signed-out';
+            state.balances = [];
+            state.recharge = [];
+            state.bonus = [];
+            lastWallets = null;
+            state.updatedAt = Date.now();
+          } else if (Array.isArray(outcome?.value)) {
+            succeed(outcome);
+          } else {
+            fail('unavailable', 'DeepSeek account balance unavailable');
+          }
           return;
         }
-        let view;
+        let response;
         try {
-          view = unwrapRemoteResult(await account.getState());
+          response = await fetch(adapter.path, {
+            method: 'GET',
+            headers: { Accept: 'application/json' },
+            cache: 'no-store',
+          });
         } catch (error) {
           fail('error', describeError(error));
           return;
         }
-        if (view === null || view === undefined || view.status !== 'credential-stored') {
+        if (response.status === 401 || response.status === 403) {
           state.phase = 'signed-out';
-          state.message = null;
-          state.links = view !== null && view !== undefined && typeof view === 'object' ? view.links ?? null : null;
+          state.message = 'The local DSH request was not authorized';
           state.balances = [];
           state.recharge = [];
           state.bonus = [];
@@ -467,27 +520,39 @@ window.__ModuleLoader__.load({
           state.updatedAt = Date.now();
           return;
         }
-        state.links = view.links ?? null;
-        let outcome;
+        if (!response.ok) {
+          let detail = `${adapter.label} usage request failed (${response.status})`;
+          try {
+            const errorBody = await response.json();
+            if (typeof errorBody?.error === 'string') detail = errorBody.error;
+          } catch {
+            // Keep the status-based diagnostic.
+          }
+          fail('error', detail);
+          return;
+        }
+        let payload;
         try {
-          outcome = unwrapRemoteResult(await account.getBalance(accountMetadata()));
+          payload = await response.json();
         } catch (error) {
-          fail('error', describeError(error));
+          fail('error', adapter.label + ' returned invalid JSON: ' + describeError(error));
           return;
         }
-        if (outcome === null || outcome === undefined) {
-          state.phase = 'signed-out';
-          state.message = null;
+        const remaining = payload?.remaining ?? payload?.quota?.remaining ?? payload?.balance;
+        const numeric = toMicro(remaining);
+        if (numeric === null) {
+          fail('error', adapter.label + ' usage response has no numeric remaining balance');
           return;
         }
-        if (outcome.status !== 'ready') {
-          fail('error', 'the platform refused the balance query');
-          return;
-        }
-        succeed(outcome);
+        const currency = String(payload?.unit ?? payload?.quota?.unit ?? 'USD').toUpperCase() === 'CNY' ? 'CNY' : 'USD';
+        succeed({
+          value: [{ currency, balance: numeric / MICRO }],
+          bonusWallets: [],
+        });
       }
 
       function requestRead(reason) {
+        if (disposed) return Promise.resolve();
         const now = Date.now();
         if (inflight !== null) return inflight;
         if (reason !== 'manual' && now - lastReadAt < READ_GAP_MS) return Promise.resolve();
@@ -529,11 +594,13 @@ window.__ModuleLoader__.load({
       }
 
       function dispose() {
+        disposed = true;
         clearTimers();
         listeners = new Set();
       }
 
       return {
+        activate() { disposed = false; },
         getSnapshot,
         subscribe,
         requestRead,
@@ -649,9 +716,24 @@ window.__ModuleLoader__.load({
      * dock cell, and the popover is positioned with fixed coordinates so no ancestor clipping
      * affects it.
      */
-    function makeWidget(store, ctx) {
+    function makeWidget(ctx) {
       function ApiBalanceWidget(props) {
+        const selection = props.useProjection('modelSelection', (value) => value?.next);
+        const [defaultProvider, setDefaultProvider] = React.useState(undefined);
+        React.useEffect(() => {
+          let active = true;
+          ctx.remote.session.modelCatalog().then((result) => {
+            if (active && result.ok) setDefaultProvider(result.value.default?.provider);
+          }).catch(() => {});
+          return () => { active = false; };
+        }, []);
+        const provider = selection?.provider ?? defaultProvider;
+        const store = React.useMemo(() => createStore(ctx, provider), [provider, props.sessionId]);
         const snap = useStoreSnapshot(store);
+        React.useEffect(() => {
+          store.activate();
+          return () => store.dispose();
+        }, [store]);
         const t = makeTranslate(props, ctx, DICT);
         const [open, setOpen] = React.useState(false);
         const rootRef = React.useRef(null);
@@ -661,7 +743,7 @@ window.__ModuleLoader__.load({
 
         React.useEffect(() => {
           if (store.setSession(sessionId)) store.requestRead('session');
-        }, [sessionId]);
+        }, [sessionId, store]);
 
         React.useEffect(() => {
           store.requestRead('mount');
@@ -679,7 +761,7 @@ window.__ModuleLoader__.load({
             document.removeEventListener('visibilitychange', onVisibility);
             window.removeEventListener('focus', onFocus);
           };
-        }, []);
+        }, [store]);
 
         const nodeCount = props.useChat === undefined ? 0 : props.useChat((chat) => chat.legacy.nodes.length);
         const lastNodeCount = React.useRef(nodeCount);
@@ -693,7 +775,7 @@ window.__ModuleLoader__.load({
           }
           if (nodeCount < lastNodeCount.current) lastNodeCount.current = nodeCount;
           return undefined;
-        }, [nodeCount]);
+        }, [nodeCount, store]);
 
         React.useEffect(() => {
           if (!open) return undefined;
@@ -733,7 +815,7 @@ window.__ModuleLoader__.load({
         const tone =
           snap.phase === 'error' || snap.phase === 'unavailable' || stale ? 'warn' : low ? 'warn' : undefined;
 
-        const pillContent = [h(IconCoin, { key: 'icon' })];
+        const pillContent = [h(IconCoin, { key: 'icon' }), h('span', { key: 'provider' }, snap.providerLabel)];
         if (stateLabel === null && primary !== undefined) {
           pillContent.push(h('span', { key: 'balance', className: 'dsbw-label' }, balanceText));
           if (sessionSpent > 0) {
@@ -824,7 +906,7 @@ window.__ModuleLoader__.load({
               h(
                 'div',
                 { className: 'dsbw-panel-title' },
-                h('span', { className: 'dsbw-title-label' }, h(IconCoin, {}), t('panel.title')),
+                h('span', { className: 'dsbw-title-label' }, h(IconCoin, {}), snap.providerLabel + ' · ' + t('panel.title')),
                 snap.updatedAt === null ? null : h('span', { className: 'dsbw-title-value' }, formatClock(snap.updatedAt)),
               ),
               h('div', { className: 'dsbw-rule', 'aria-hidden': true }),
@@ -841,7 +923,7 @@ window.__ModuleLoader__.load({
 
         return h(
           'span',
-          { className: 'dsbw-anchor', ref: rootRef, 'data-balance-widget': '', 'data-balance-session': sessionId === undefined ? '' : String(sessionId) },
+          { className: 'dsbw-anchor', ref: rootRef, 'data-balance-widget': '', 'data-balance-provider': provider ?? '', 'data-balance-session': sessionId === undefined ? '' : String(sessionId) },
           h(
             'button',
             {
@@ -882,10 +964,8 @@ window.__ModuleLoader__.load({
     }
 
     function apply(ctx) {
-      const store = createStore(ctx);
       ctx.effect(() => installStyles());
       ctx.effect(() => ctx.locale.register(NS, DICT));
-      ctx.effect(() => () => store.dispose());
       ctx.slots.inject('conversation.composer.dock', () =>
         ctx.slots.register(
           {
@@ -894,12 +974,12 @@ window.__ModuleLoader__.load({
             order: 2,
             locale: NS,
           },
-          makeWidget(store, ctx),
+          makeWidget(ctx),
         ),
       );
     }
 
-    return { inject: ['slots', 'locale', 'remote', 'remote.account'], apply };
+    return { inject: ['slots', 'locale', 'remote', 'remote.account', 'remote.session'], apply };
   },
 });
 

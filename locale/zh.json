@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "API 余额",
-    "description": "在输入框下方显示 DeepSeek 账号余额和本会话消耗，随请求结算自动更新。"
+    "description": "跟随所选模型供应商，显示 AIGoCode、Taffy 或 DeepSeek 账号余额及观察到的消耗。"
   }
 }
