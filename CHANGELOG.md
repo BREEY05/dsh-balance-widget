@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.3.1
+
+- Documentation-only release: 1.3.0 shipped a tarball whose README still told readers to install
+  `@breey05/dsh-balance-widget@1.2.0`, so the npm page showed a stale version. The install snippet and
+  provider table now describe 1.3.0 behaviour.
+
 ## 1.3.0
 
 - Fix the balance going blank after a profile renamed or added provider IDs: `taffy` (renamed from `tafy`) and `ds` are now mapped, so the pill shows the balance instead of “余额不可用”.
