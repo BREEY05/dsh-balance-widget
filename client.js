@@ -304,9 +304,16 @@ window.__ModuleLoader__.load({
      * Page-lifetime holder of the latest balance reading, the per-session and per-day spend
      * ledgers, and the read scheduler. The component only renders it.
      */
+    /**
+     * Provider id -> balance source. Keys must match `SOURCES` in index.js (asserted by the test):
+     * `taffy`, `tafy`, and `ds` all bill the same wallet under different credentials, and a
+     * missing id is what silently blanked the pill when the profile renamed its providers.
+     */
     const PROVIDERS = {
       aigocode: { label: 'AIGoCode', path: '/api/aigocode-usage' },
-      tafy: { label: 'Taffy', path: '/api/taffy-usage' },
+      taffy: { label: 'Taffy', path: '/api/taffy-usage' },
+      tafy: { label: 'Taffy', path: '/api/tafy-usage' },
+      ds: { label: 'Taffy', path: '/api/ds-usage' },
       'deepseek-account': { label: 'DeepSeek Account', account: true },
     };
 

@@ -7,10 +7,14 @@
 | 模型供应商 ID | 余额来源 | 凭据 |
 |---|---|---|
 | `aigocode` | `https://api.aigocode.dev/v1/usage` 的 `balance`，USD | 本地 `AIGOCODE_API_KEY` |
-| `tafy` | `https://taffy.work/v1/usage` 的 remaining / quota.remaining / balance，USD | 本地 `TAFY_API_KEY` |
+| `taffy` | `https://taffy.work/v1/usage` 的 remaining / quota.remaining / balance，USD | 本地 `TAFFY_API_KEY` |
+| `tafy` | 同上（旧 ID，保留兼容） | 本地 `TAFFY_API_KEY` |
+| `ds` | 同上，但使用该路由自己的密钥 | 本地 `DS_API_KEY` |
 | `deepseek-account` | DSH 账号 Remote 的充值与赠金钱包 | 设置中的 DeepSeek 登录 |
 
-供应商 ID 必须与上表一致。其他供应商显示“余额不可用”，不会展示别家的余额。DeepSeek API Key 路由当前尚未接入余额接口。不同模型如果属于同一供应商，使用同一钱包。
+上表就是 `llm-pi-ai` 的 provider ID。多个 ID 可能指向同一钱包但配置不同密钥（例如 `taffy`、`tafy`、`ds` 都走 `taffy.work`），插件按 ID 各自读取，因此改 ID 后余额不会静默变空。不在表中的供应商显示“余额不可用”。DeepSeek API Key 路由（`https://api.deepseek.com/anthropic`）当前尚未接入余额接口。不同模型如果属于同一供应商，使用同一钱包。
+
+新增供应商时，在 `index.js` 的 `SOURCES` 和 `client.js` 的 `PROVIDERS` 中各加一行；`npm test` 会校验两边 ID 一致。
 
 ## 安装与更新
 
@@ -44,7 +48,7 @@
 
 `npm test` 检查路由选择、账户钱包合计、未知供应商、消费隔离和迟到请求。测试使用模拟响应，不代表真实供应商连通性。
 
-`client.js` 注册 `conversation.composer.dock`；`index.js` 提供受保护的 `/api/aigocode-usage` 和 `/api/taffy-usage`。保留原始图标及中英文本地化。
+`client.js` 注册 `conversation.composer.dock`；`index.js` 按 `SOURCES` 为每个供应商注册一条受保护路由（`/api/aigocode-usage`、`/api/taffy-usage`、`/api/tafy-usage`、`/api/ds-usage`）。保留原始图标及中英文本地化。
 
 社区市场收录通过向 [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/blob/main/contributing.md) 提交目录 PR；npm 发布本身不会自动完成首次收录。后续版本由市场定期探测。
 

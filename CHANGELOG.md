@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.3.0
+
+- Fix the balance going blank after a profile renamed or added provider IDs: `taffy` (renamed from `tafy`) and `ds` are now mapped, so the pill shows the balance instead of “余额不可用”.
+- Each provider ID resolves its own credential (`TAFFY_API_KEY` for `taffy`/`tafy`, `DS_API_KEY` for `ds`), so two routes to the same wallet no longer share one key.
+- Host routes are generated from one `SOURCES` table; `npm test` asserts the client `PROVIDERS` map and the host table list the same IDs.
+- Report a missing credential ref, a non-JSON response, and an inactive account as distinct errors instead of a generic failure.
+
 ## 1.2.0
 
 - Follow the current session's selected provider via the modelSelection projection.
@@ -10,7 +17,7 @@
 
 ## 1.1.0 (local development, unpublished)
 
-- Read Taffy usage through a protected Host route using the local `TAFY_API_KEY` credential reference.
+- Read Taffy usage through a protected Host route using the local `TAFFY_API_KEY` credential reference.
 - Removed the browser-side DeepSeek account Remote dependency.
 - Normalize Taffy remaining balance and preserve spend tracking.
 
