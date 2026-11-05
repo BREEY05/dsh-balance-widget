@@ -19,12 +19,22 @@
 
 注意两点：需要余额接口使用同一把 API Key 做 Bearer 认证（大多数中转/官方实现如此）；若该供应商只提供网页登录态才能看的额度，或未声明 `baseURL`/`apiKeyEnv`，后端会返回“没有可用余额接口 / 缺少凭据”，此时在 `index.js` 的 `SOURCES` 中显式加一行 `usageUrl` 即可。`client.js` 的 `PROVIDERS` 只影响显示名称，未列出的 ID 直接用 ID 本身作标签。
 
+## 接入一个新供应商
+
+不要靠猜，也不要向用户索要接口细节。在仓库里跑一次探测脚本，它会自己问出协议、模型清单和余额地址：
+
+```
+node scripts/probe-provider.mjs --id <provider-id> --base https://<base-url> --key-env <ENV_NAME>
+```
+
+脚本按环境变量、再按 `~/.dsh/.credentials.yaml` 的顺序取 Key，依次试 `/v1/models`、`/v1/chat/completions`、`/v1/responses`、`/v1/messages` 判断是 OpenAI 兼容还是 Anthropic 兼容，再走一遍上面的余额探测，最后直接打印可粘贴进 `cordis.patch.yml` 的 `llm-pi-ai.config.providers` 片段。确认片段后再写入 profile，余额侧无需改代码。
+
 ## 安装与更新
 
 在 DSH 的插件安装框输入：
 
 ```
-@breey05/dsh-balance-widget@1.4.0
+@breey05/dsh-balance-widget@1.4.1
 ```
 
 也可使用 GitHub 仓库地址 `git+https://github.com/BREEY05/dsh-balance-widget.git`，或安装本地目录。需要 DSH `>=0.2.1-rc.2 <0.3.0`。安装后刷新当前页面。

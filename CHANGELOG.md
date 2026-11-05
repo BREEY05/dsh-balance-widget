@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.4.1
+
+- Added `scripts/probe-provider.mjs`: given a provider base URL and its key env name it reports the API
+  protocol, the model catalogue and a working balance endpoint, then prints the `llm-pi-ai` profile
+  block. Onboarding a provider no longer needs anyone to supply endpoint details up front.
+- README documents that workflow.
+
 ## 1.4.0
 
 - Balance sources are discovered instead of hard-coded: an unknown provider ID is resolved from the

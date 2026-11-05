@@ -1,6 +1,6 @@
 {
   "name": "@breey05/dsh-balance-widget",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "scripts": { "test": "node switching.test.mjs" },
   "publishConfig": { "access": "public" },
   "type": "module",
@@ -16,7 +16,7 @@
     "./package.json": "./package.json",
     "./cordis.patch.yml": "./cordis.patch.yml"
   },
-  "files": ["switching.test.mjs", "index.js", "client.js", "cordis.patch.yml", "locale/*.json", "icon.svg", "README.md", "LICENSE"],
+  "files": ["switching.test.mjs", "scripts/probe-provider.mjs", "index.js", "client.js", "cordis.patch.yml", "locale/*.json", "icon.svg", "README.md", "LICENSE"],
   "license": "MIT",
   "keywords": ["dsh", "dsh-plugin", "taffy", "balance", "spend", "usage"],
   "engines": { "dsh": ">=0.2.1-rc.2 <0.3.0" },
