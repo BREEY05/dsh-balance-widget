@@ -314,8 +314,21 @@ window.__ModuleLoader__.load({
       taffy: { label: 'Taffy', path: '/api/taffy-usage' },
       tafy: { label: 'Taffy', path: '/api/tafy-usage' },
       ds: { label: 'Taffy', path: '/api/ds-usage' },
+      'deepseek-official': { label: 'DeepSeek', path: '/api/deepseek-usage' },
       'deepseek-account': { label: 'DeepSeek Account', account: true },
     };
+
+    /**
+     * Any other provider id is resolved by the Host, which reads the profile's `baseURL` and
+     * probes the documented balance endpoints itself. That keeps a newly configured provider
+     * working without a new release of this plugin.
+     */
+    function adapterFor(provider) {
+      const known = PROVIDERS[provider];
+      if (known !== undefined) return known;
+      if (typeof provider !== 'string' || provider === '') return null;
+      return { label: provider, path: '/api/provider-balance?provider=' + encodeURIComponent(provider), generic: true };
+    }
 
     function createStore(ctx, provider) {
       let listeners = new Set();
@@ -328,7 +341,7 @@ window.__ModuleLoader__.load({
 
       const today = readToday(provider);
       const state = {
-        phase: PROVIDERS[provider] ? 'loading' : 'unavailable',
+        phase: provider ? 'loading' : 'unavailable',
         provider,
         providerLabel: PROVIDERS[provider]?.label ?? provider ?? '—',
         balances: [],
@@ -482,7 +495,7 @@ window.__ModuleLoader__.load({
       }
 
       async function readOnce() {
-        const adapter = PROVIDERS[provider];
+        const adapter = adapterFor(provider);
         if (!adapter) {
           state.phase = 'unavailable';
           state.message = '当前供应商尚未接入余额接口 / No balance adapter: ' + (provider ?? 'unknown');
@@ -535,7 +548,7 @@ window.__ModuleLoader__.load({
           } catch {
             // Keep the status-based diagnostic.
           }
-          fail('error', detail);
+          fail(adapter.generic ? 'unavailable' : 'error', detail);
           return;
         }
         let payload;
@@ -545,13 +558,21 @@ window.__ModuleLoader__.load({
           fail('error', adapter.label + ' returned invalid JSON: ' + describeError(error));
           return;
         }
-        const remaining = payload?.remaining ?? payload?.quota?.remaining ?? payload?.balance;
+        const info = Array.isArray(payload?.balance_infos) ? payload.balance_infos[0] : undefined;
+        const remaining =
+          payload?.remaining ??
+          payload?.quota?.remaining ??
+          payload?.balance ??
+          payload?.data?.balance ??
+          payload?.data?.remaining ??
+          info?.total_balance;
         const numeric = toMicro(remaining);
         if (numeric === null) {
           fail('error', adapter.label + ' usage response has no numeric remaining balance');
           return;
         }
-        const currency = String(payload?.unit ?? payload?.quota?.unit ?? 'USD').toUpperCase() === 'CNY' ? 'CNY' : 'USD';
+        const rawUnit = payload?.unit ?? payload?.quota?.unit ?? payload?.currency ?? info?.currency ?? 'USD';
+        const currency = String(rawUnit).toUpperCase() === 'CNY' ? 'CNY' : 'USD';
         succeed({
           value: [{ currency, balance: numeric / MICRO }],
           bonusWallets: [],

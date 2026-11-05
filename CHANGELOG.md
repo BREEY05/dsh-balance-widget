@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.4.0
+
+- Balance sources are discovered instead of hard-coded: an unknown provider ID is resolved from the
+  profile's `baseURL`/`apiKeyEnv`, then the Host probes the documented balance paths (`/user/balance`,
+  `/v1/usage`, `/v1/credits`, `/v1/dashboard/billing/subscription`, `/api/user/self`, `/v1/balance`,
+  `/api/usage`, `/usage`) and caches the winning endpoint per origin.
+- Added the official DeepSeek route `deepseek-official`, which reads `balance_infos[].total_balance` (CNY)
+  from `https://api.deepseek.com/user/balance`.
+- Response parsing accepts nested `data`/`quota` shapes and `balance_infos`, so a CNY wallet no longer
+  shows up as a blank pill.
+- New generic Host route `GET /api/provider-balance?provider=<id>` backs every provider without an
+  explicit source entry; the client falls back to it instead of reporting the balance as unavailable.
+
 ## 1.3.1
 
 - Documentation-only release: 1.3.0 shipped a tarball whose README still told readers to install
