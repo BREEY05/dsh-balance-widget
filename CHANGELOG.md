@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.4.3
+
+- The popover now cancels the offset a transformed/filtered ancestor introduces: placement measures
+  where the panel actually lands and subtracts that drift, so `position: fixed` inside such a
+  containing block no longer shifts the panel away from the pill.
+- Placement runs synchronously on open, again after paint, and twice more while the composer settles;
+  a panel that is not laid out yet is retried instead of staying hidden, which is why the click
+  sometimes appeared to do nothing.
+- The React portal import is now guarded against a loader that returns no module, and a portal that
+  throws falls back to inline rendering.
+## 1.4.2
+
+- Fixed the popover opening offset from the pill: the panel is now rendered through a React portal
+  into `document.body`, so ancestors of the composer that clip overflow or create a containing block
+  (`transform`, `backdrop-filter`) no longer shift its `position: fixed` coordinates.
+- The panel is re-measured with a `ResizeObserver`, so it stays anchored when its height changes after
+  the balance settles (loading note replaced by the detail rows).
+
 ## 1.4.1
 
 - Added `scripts/probe-provider.mjs`: given a provider base URL and its key env name it reports the API

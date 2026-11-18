@@ -3,6 +3,13 @@ window.__ModuleLoader__.load({
   factory(require) {
     const React = require('react');
     const h = React.createElement;
+    /** Optional: portals let the popover escape the composer's clipped/transformed ancestors. */
+    let reactDom = null;
+    try {
+      reactDom = require('react-dom');
+    } catch {
+      reactDom = null;
+    }
 
     /** Locale namespace shared by the registration and the dictionaries below. */
     const NS = 'api-balance';
@@ -650,6 +657,37 @@ window.__ModuleLoader__.load({
       return snap;
     }
 
+    const PANEL_MARGIN = 12;
+    const PANEL_GAP = 8;
+
+    /**
+     * Places the popover in viewport coordinates.
+     *
+     * `applied` is the left/top currently written to the panel and `rect` is where it really
+     * renders. The two differ wherever an ancestor establishes the containing block for
+     * `position: fixed` (transform, filter, backdrop-filter, contain, zoom): the panel is then
+     * offset by that ancestor's origin, so the observed drift is measured and cancelled instead
+     * of being assumed to be zero.
+     */
+    function panelPlacement(anchor, rect, applied, viewportWidth, viewportHeight) {
+      const driftX = rect.left - applied.left;
+      const driftY = rect.top - applied.top;
+      let left = anchor.left + anchor.width / 2 - rect.width / 2;
+      const maxLeft = Math.max(PANEL_MARGIN, viewportWidth - PANEL_MARGIN - rect.width);
+      left = Math.max(PANEL_MARGIN, Math.min(left, maxLeft));
+      let top = anchor.top - PANEL_GAP - rect.height;
+      if (top < PANEL_MARGIN) top = anchor.bottom + PANEL_GAP;
+      const maxTop = Math.max(PANEL_MARGIN, viewportHeight - PANEL_MARGIN - rect.height);
+      top = Math.max(PANEL_MARGIN, Math.min(top, maxTop));
+      return { left: Math.round(left - driftX), top: Math.round(top - driftY) };
+    }
+
+    /**
+     * Anchors the popover to the pill above the composer and re-measures whenever either box
+     * changes size, so a growing panel (loading -> settled rows) never leaves the popover offset.
+     * Placement retries briefly, because a panel that is not laid out yet (portal just mounted,
+     * composer still animating) would otherwise stay invisible after the click.
+     */
     function useAnchoredPanel(open, anchorRef, panelRef) {
       const [pos, setPos] = React.useState(null);
       React.useLayoutEffect(() => {
@@ -658,39 +696,90 @@ window.__ModuleLoader__.load({
           return undefined;
         }
         let frame = 0;
+        let attempts = 0;
+        let lastKey = '';
+        const measure = () => {
+          frame = 0;
+          const anchor = anchorRef.current;
+          const panel = panelRef.current;
+          const pending = anchor === null || panel === null;
+          const rect = pending ? null : panel.getBoundingClientRect();
+          const width = pending ? 0 : rect.width > 0 ? rect.width : panel.offsetWidth;
+          const height = pending ? 0 : rect.height > 0 ? rect.height : panel.offsetHeight;
+          if (!(width > 0 && height > 0)) {
+            attempts += 1;
+            if (attempts <= 20) place();
+            return;
+          }
+          const applied = {
+            left: parseFloat(panel.style.left) || 0,
+            top: parseFloat(panel.style.top) || 0,
+          };
+          /* Diagnostic trail: the pre-correction offset of the containing block, visible in the DOM. */
+          panel.dataset.drift = Math.round(rect.left - applied.left) + ',' + Math.round(rect.top - applied.top);
+          const next = panelPlacement(
+            anchor.getBoundingClientRect(),
+            { left: rect.left, top: rect.top, width, height },
+            applied,
+            window.innerWidth,
+            window.innerHeight,
+          );
+          const key = next.left + ':' + next.top;
+          if (key === lastKey) return;
+          lastKey = key;
+          setPos(next);
+        };
         const place = () => {
           if (typeof window.requestAnimationFrame === 'function') {
-            window.cancelAnimationFrame(frame);
+            if (frame !== 0) window.cancelAnimationFrame(frame);
             frame = window.requestAnimationFrame(measure);
           } else {
             measure();
           }
         };
-        const measure = () => {
-          const anchor = anchorRef.current;
-          const panel = panelRef.current;
-          if (anchor === null || panel === null) return;
-          const a = anchor.getBoundingClientRect();
-          const p = panel.getBoundingClientRect();
-          const margin = 12;
-          const gap = 8;
-          let left = a.left + a.width / 2 - p.width / 2;
-          left = Math.max(margin, Math.min(left, window.innerWidth - margin - p.width));
-          let top = a.top - gap - p.height;
-          if (top < margin) top = a.bottom + gap;
-          top = Math.max(margin, Math.min(top, window.innerHeight - margin - p.height));
-          setPos({ left: Math.round(left), top: Math.round(top) });
-        };
+        /* Measure now (the hidden panel is already laid out at 0,0) and again after paint, so
+           neither a first-frame jump nor a composer animation can leave it detached. */
+        measure();
         place();
+        const timers = [
+          window.setTimeout(place, 120),
+          window.setTimeout(place, 320),
+        ];
         window.addEventListener('resize', place);
         window.addEventListener('scroll', place, true);
+        let observer = null;
+        if (typeof ResizeObserver === 'function') {
+          observer = new ResizeObserver(place);
+          const anchor = anchorRef.current;
+          const panel = panelRef.current;
+          if (anchor !== null) observer.observe(anchor);
+          if (panel !== null) observer.observe(panel);
+        }
         return () => {
+          for (const id of timers) window.clearTimeout(id);
           window.removeEventListener('resize', place);
           window.removeEventListener('scroll', place, true);
+          if (observer !== null) observer.disconnect();
           if (frame !== 0 && typeof window.cancelAnimationFrame === 'function') window.cancelAnimationFrame(frame);
         };
       }, [open, anchorRef, panelRef]);
       return pos;
+    }
+
+    /**
+     * Renders the popover into document.body. The composer sits inside ancestors that clip overflow
+     * and, with a backdrop filter or transform, become the containing block for position:fixed, so a
+     * panel left in place would be offset; a portal keeps viewport coordinates exact.
+     */
+    function renderPortal(element) {
+      if (reactDom === null || reactDom === undefined) return element;
+      if (typeof reactDom.createPortal !== 'function') return element;
+      if (typeof document === 'undefined' || document.body === null || document.body === undefined) return element;
+      try {
+        return reactDom.createPortal(element, document.body);
+      } catch {
+        return element;
+      }
     }
 
     function IconCoin() {
@@ -919,33 +1008,35 @@ window.__ModuleLoader__.load({
         }
 
         const panel = open
-          ? h(
-              'div',
-              {
-                ref: panelRef,
-                className: 'dsbw-panel',
-                role: 'dialog',
-                'aria-label': t('panel.title'),
-                style:
-                  pos === null
-                    ? { left: 0, top: 0, visibility: 'hidden' }
-                    : { left: pos.left + 'px', top: pos.top + 'px' },
-              },
+          ? renderPortal(
               h(
                 'div',
-                { className: 'dsbw-panel-title' },
-                h('span', { className: 'dsbw-title-label' }, h(IconCoin, {}), snap.providerLabel + ' · ' + t('panel.title')),
-                snap.updatedAt === null ? null : h('span', { className: 'dsbw-title-value' }, formatClock(snap.updatedAt)),
+                {
+                  ref: panelRef,
+                  className: 'dsbw-panel',
+                  role: 'dialog',
+                  'aria-label': t('panel.title'),
+                  style:
+                    pos === null
+                      ? { left: 0, top: 0, visibility: 'hidden' }
+                      : { left: pos.left + 'px', top: pos.top + 'px' },
+                },
+                h(
+                  'div',
+                  { className: 'dsbw-panel-title' },
+                  h('span', { className: 'dsbw-title-label' }, h(IconCoin, {}), snap.providerLabel + ' · ' + t('panel.title')),
+                  snap.updatedAt === null ? null : h('span', { className: 'dsbw-title-value' }, formatClock(snap.updatedAt)),
+                ),
+                h('div', { className: 'dsbw-rule', 'aria-hidden': true }),
+                rows.length > 0 ? h('dl', { className: 'dsbw-details' }, rows) : null,
+                snap.phase === 'signed-out' ? h('p', { className: 'dsbw-note' }, t('note.signIn')) : null,
+                snap.phase === 'loading' ? h('p', { className: 'dsbw-note' }, t('note.loading')) : null,
+                snap.phase === 'error' || snap.phase === 'unavailable'
+                  ? h('p', { className: 'dsbw-error' }, (snap.message ?? t('error.failed')) + '')
+                  : null,
+                h('p', { className: 'dsbw-note' }, t('note.spend')),
+                h('div', { className: 'dsbw-actions' }, actions),
               ),
-              h('div', { className: 'dsbw-rule', 'aria-hidden': true }),
-              rows.length > 0 ? h('dl', { className: 'dsbw-details' }, rows) : null,
-              snap.phase === 'signed-out' ? h('p', { className: 'dsbw-note' }, t('note.signIn')) : null,
-              snap.phase === 'loading' ? h('p', { className: 'dsbw-note' }, t('note.loading')) : null,
-              snap.phase === 'error' || snap.phase === 'unavailable'
-                ? h('p', { className: 'dsbw-error' }, (snap.message ?? t('error.failed')) + '')
-                : null,
-              h('p', { className: 'dsbw-note' }, t('note.spend')),
-              h('div', { className: 'dsbw-actions' }, actions),
             )
           : null;
 

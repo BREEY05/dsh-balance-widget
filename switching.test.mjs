@@ -10,7 +10,7 @@ let api;
 let source = fs.readFileSync(new URL('./client.js', import.meta.url), 'utf8');
 source = source.replace(
   "return { inject: ['slots'",
-  "window.testApi = { createStore, makeWidget, PROVIDERS }; return { inject: ['slots'",
+  "window.testApi = { createStore, makeWidget, PROVIDERS, panelPlacement }; return { inject: ['slots'",
 );
 const storage = () => {
   const m = new Map();
@@ -152,6 +152,29 @@ assert.equal(d.getSnapshot().sessionSpent.CNY, undefined);
 for (const x of [a, t, taffy, ds, official, d, u]) x.dispose();
 assert.match(source, /useProjection\('modelSelection', \(value\) => value\?\.next\)/);
 assert.match(source, /\[provider, props.sessionId\]/);
+// The popover must leave the composer subtree: ancestors there clip overflow and, when they set a
+// transform or backdrop filter, become the containing block for position:fixed and shift the panel.
+assert.match(source, /createPortal\(element, document\.body\)/);
+assert.match(source, /renderPortal\(/);
+assert.match(source, /new ResizeObserver\(place\)/);
+// The placement must keep working even when an ancestor turns position:fixed into an
+// ancestor-relative box: the observed drift is measured and cancelled instead of assumed zero.
+assert.match(source, /panelPlacement\(/);
+const rect = (left, top, width, height) => ({ left, top, width, height, right: left + width, bottom: top + height });
+const place = (anchor, panelRect, applied = { left: 0, top: 0 }, w = 1200, h = 800) =>
+  api.panelPlacement(anchor, panelRect, applied, w, h);
+
+// A plain viewport containing block: centered over the pill, sitting just above it.
+const same = (actual, expected) => assert.deepEqual({ ...actual }, expected);
+same(place(rect(100, 300, 80, 24), rect(0, 0, 300, 200)), { left: 12, top: 92 });
+// The composer's transformed ancestor adds its own origin: drift (400,300) is cancelled.
+same(place(rect(100, 300, 80, 24), rect(400, 300, 300, 200)), { left: -388, top: -208 });
+// Re-measuring after that placement is idempotent (drift is measured against the applied offset).
+same(place(rect(100, 300, 80, 24), rect(12, 92, 300, 200), { left: -388, top: -208 }), { left: -388, top: -208 });
+// Near the top edge it flips below the pill instead of leaving the viewport.
+assert.equal(place(rect(100, 20, 80, 24), rect(0, 0, 300, 200)).top, 52);
+// Near the right edge it is clamped fully on screen.
+assert.equal(place(rect(1180, 400, 20, 24), rect(0, 0, 300, 200)).left, 888);
 
 // ------------------------------------------------------------- host half
 

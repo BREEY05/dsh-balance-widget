@@ -34,7 +34,7 @@ node scripts/probe-provider.mjs --id <provider-id> --base https://<base-url> --k
 在 DSH 的插件安装框输入：
 
 ```
-@breey05/dsh-balance-widget@1.4.1
+@breey05/dsh-balance-widget@1.4.3
 ```
 
 也可使用 GitHub 仓库地址 `git+https://github.com/BREEY05/dsh-balance-widget.git`，或安装本地目录。需要 DSH `>=0.2.1-rc.2 <0.3.0`。安装后刷新当前页面。
