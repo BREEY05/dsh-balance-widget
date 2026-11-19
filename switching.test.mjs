@@ -394,7 +394,24 @@ assert.equal((await callSessionRoute('/api/session-usage')).status, 400);
 assert.equal((await callSessionRoute('/api/session-usage?session=live-1', 'POST')).status, 405);
 assert.equal((await callSessionRoute('/api/session-usage?session=live-1', 'GET', {})).status, 200);
 
+// ------------------------------------------------------- snapshot field contract
+/**
+ * 1.4.4 removed the whole pill: the renderer read `snap.cost` while build() never published it, so
+ * every render threw. Rendering is not exercised here, so guard the read/write contract statically.
+ */
+const clientSource = fs.readFileSync(new URL('./client.js', import.meta.url), 'utf8');
+const buildAt = clientSource.indexOf('function build()');
+const buildEnd = clientSource.indexOf('function emit()', buildAt);
+assert.ok(buildAt > 0 && buildEnd > buildAt, 'build() must exist and precede emit()');
+const publishedFields = new Set(
+  [...clientSource.slice(buildAt, buildEnd).matchAll(/^\s+([A-Za-z_][A-Za-z0-9_]*):/gm)].map((m) => m[1]),
+);
+const renderedFields = [...new Set([...clientSource.matchAll(/snap\.([A-Za-z_][A-Za-z0-9_]*)/g)].map((m) => m[1]))];
+assert.ok(publishedFields.size >= 10, 'build() snapshot fields must be discoverable');
+const unpublished = renderedFields.filter((field) => !publishedFields.has(field));
+assert.deepEqual(unpublished, [], 'renderer reads snapshot fields build() never publishes: ' + unpublished.join(', '));
+
 globalThis.fetch = realFetch;
 fs.rmSync(dir, { recursive: true, force: true });
 
-console.log('PASS: provider routes, wallet total, renamed provider ids, official DeepSeek wallet, generic discovery, profile parsing, isolated counters, disposed response, host balance sources, billed conversation cost, session token fold');
+console.log('PASS: provider routes, wallet total, renamed provider ids, official DeepSeek wallet, generic discovery, profile parsing, isolated counters, disposed response, host balance sources, billed conversation cost, session token fold, snapshot field contract');

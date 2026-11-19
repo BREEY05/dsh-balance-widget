@@ -448,6 +448,7 @@ window.__ModuleLoader__.load({
           message: state.message,
           sessionId: state.sessionId,
           sessionSpent: session === undefined ? Object.freeze({}) : Object.freeze(Object.fromEntries(session)),
+          cost: state.cost,
           costSpent: state.costSpent,
           tokens: state.tokens,
           todaySpent: Object.freeze(state.costToday !== null ? { ...state.costToday } : { ...state.today.micro }),
@@ -1127,7 +1128,7 @@ window.__ModuleLoader__.load({
             );
           }
         }
-        const spendCurrency = spentCurrency ?? (snap.cost === null ? undefined : snap.cost.currency);
+        const spendCurrency = spentCurrency ?? snap.cost?.currency;
         if (spendCurrency !== undefined) {
           rows.push(
             h('dt', { key: 'dt-session' }, t('label.sessionSpent')),

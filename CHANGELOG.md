@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.4.5
+
+- Fix: the pill disappeared completely after 1.4.4. The renderer read `snap.cost` while the store's
+  snapshot never published a `cost` field, so every render threw a `TypeError` and the composer dock
+  slot rendered nothing.
+- `build()` now publishes `cost`, and the popover reads it with optional chaining, so a snapshot
+  without provider pricing can never take the widget down again.
+- New test: the suite statically compares every `snap.<field>` read in the renderer against the
+  fields `build()` publishes, so a future field cannot be read before it exists.
+
 ## 1.4.4
 
 - The widget now says what the **open conversation** cost. When the provider reports a billed total
