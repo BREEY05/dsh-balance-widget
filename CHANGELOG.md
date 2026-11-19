@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.4.4
+
+- The widget now says what the **open conversation** cost. When the provider reports a billed total
+  (`usage.total.actual_cost`, `daily_usage[]`, `model_stats[]`, or a flat `total_cost`), the Host
+  passes it through and the client attributes the growth since the conversation started to that
+  conversation. A top-up, an expiring bonus, or a price change therefore no longer looks like spend.
+- Providers that expose only a balance keep the previous behaviour: spend is estimated from the
+  balance drop.
+- New protected route `GET /api/session-usage?session=<id>` folds the session log's
+  `assistant/message` events, so the panel shows real input/output token counts and the request count
+  for the conversation (de-duplicated by message id, grouped per provider/model). No price table is
+  involved and nothing is estimated.
+- The popover gained `本对话消耗` / `输入 / 输出 token` / `本对话请求数` rows; the pill keeps showing the
+  balance plus the conversation spend.
+- Switching conversations resets the per-conversation baseline and token totals, and drops the
+  stale wallet snapshot used for drop tracking.
+
 ## 1.4.3
 
 - The popover now cancels the offset a transformed/filtered ancestor introduces: placement measures

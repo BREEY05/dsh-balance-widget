@@ -111,6 +111,55 @@ export function extractBalance(payload) {
   return null;
 }
 
+const COST_KEYS = ['actual_cost', 'cost', 'total_cost', 'totalCost', 'spent', 'used_amount', 'used'];
+
+/** Read one provider-reported money figure out of an aggregate bag, in whatever unit it uses. */
+function costOf(bag) {
+  if (bag === null || typeof bag !== 'object') return null;
+  for (const key of COST_KEYS) {
+    const value = numeric(bag[key]);
+    if (value !== null) return value;
+  }
+  return null;
+}
+
+function sumCosts(rows) {
+  let sum = null;
+  for (const row of rows) {
+    const value = costOf(row);
+    if (value === null) continue;
+    sum = (sum ?? 0) + value;
+  }
+  return sum;
+}
+
+/**
+ * Pull the provider's own billed spend out of a usage payload.
+ *
+ * The balance tells how much is left; this tells how much was actually charged, which is the only
+ * figure that can answer "what did this conversation cost" without inventing per-token prices.
+ * Gateways disagree on where they keep it: `usage.total` / `usage.today` (sourcesdata style),
+ * per-day rows (`daily_usage`), per-model rows (`model_stats`), or one flat `total_cost`.
+ *
+ * @returns {{ total: number | null, today: number | null, unit: string } | null}
+ */
+export function extractCost(payload) {
+  if (payload === null || typeof payload !== 'object') return null;
+  const usage = payload.usage ?? payload.data?.usage;
+  const unit = unitOf(payload.unit ?? payload.currency ?? usage?.unit ?? payload.data?.unit);
+  const total = costOf(usage?.total) ?? costOf(payload.total);
+  const today = costOf(usage?.today) ?? costOf(payload.today);
+  if (total !== null || today !== null) return { total, today, unit };
+  for (const rows of [payload.daily_usage ?? payload.data?.daily_usage, payload.model_stats ?? payload.data?.model_stats]) {
+    if (!Array.isArray(rows) || rows.length === 0) continue;
+    const sum = sumCosts(rows);
+    if (sum !== null) return { total: sum, today: null, unit };
+  }
+  const flat = costOf(payload.data) ?? costOf(payload);
+  if (flat !== null) return { total: flat, today: null, unit };
+  return null;
+}
+
 function baseOf(source) {
   const raw = source.baseURL ?? source.usageUrl;
   if (typeof raw !== 'string' || raw === '') return null;
@@ -317,7 +366,64 @@ export async function readUsage(ctx, source) {
   if (value === null) {
     return { status: 502, body: { error: `${source.label} response has no numeric balance`, provider: source.id } };
   }
-  return { status: 200, body: { provider: source.id, label: source.label, balance: value, unit: found.unit ?? 'USD' } };
+  const body = { provider: source.id, label: source.label, balance: value, unit: found.unit ?? 'USD' };
+  const spent = extractCost(payload);
+  if (spent !== null) body.spent = spent;
+  return { status: 200, body };
+}
+
+const TOKEN_FIELDS = ['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens', 'reasoningTokens', 'totalTokens'];
+
+function emptyTokens() {
+  return { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, totalTokens: 0 };
+}
+
+/**
+ * Add up the token usage this session actually reported, per provider/model route.
+ *
+ * Every completed model call appends an `assistant/message` event carrying the provider's own
+ * `usage`, so this is measured, not estimated: no price table and no balance arithmetic. Retried
+ * attempts can append the same message twice, so events are de-duplicated by message id.
+ *
+ * @returns {{ requests: number, tokens: Record<string, number>, models: Array<Record<string, unknown>> }}
+ */
+export function foldSessionUsage(events) {
+  const totals = emptyTokens();
+  const models = new Map();
+  const seen = new Set();
+  let requests = 0;
+  for (const event of Array.isArray(events) ? events : []) {
+    if (event === null || typeof event !== 'object' || event.type !== 'assistant/message') continue;
+    const data = event.data;
+    const usage = data?.usage;
+    if (usage === null || usage === undefined || typeof usage !== 'object') continue;
+    const messageId = data?.message?.id;
+    if (typeof messageId === 'string') {
+      if (seen.has(messageId)) continue;
+      seen.add(messageId);
+    }
+    requests += 1;
+    const source = data?.message?.source ?? {};
+    const provider = typeof source.provider === 'string' ? source.provider : '';
+    const model = typeof source.model === 'string' ? source.model : '';
+    const key = provider + '\u0000' + model;
+    let row = models.get(key);
+    if (row === undefined) {
+      row = { provider, model, requests: 0, ...emptyTokens() };
+      models.set(key, row);
+    }
+    row.requests += 1;
+    for (const field of TOKEN_FIELDS) {
+      const value = numeric(usage[field]);
+      if (value === null) continue;
+      row[field] += value;
+      totals[field] += value;
+    }
+  }
+  if (totals.totalTokens === 0 && (totals.inputTokens > 0 || totals.outputTokens > 0)) {
+    totals.totalTokens = totals.inputTokens + totals.outputTokens;
+  }
+  return { requests, tokens: totals, models: [...models.values()] };
 }
 
 function send(res, status, body) {
@@ -368,4 +474,43 @@ export function apply(ctx) {
     }),
   });
   ctx.effect(() => dispose);
+
+  // What the open conversation has spent so far, straight out of the session log: real token
+  // counts per provider/model plus the provider's own billed cost when it reports one.
+  const sessionDispose = ctx.webServer.register({
+    kind: 'exact',
+    path: '/api/session-usage',
+    handler: async (req, res) => {
+      const rejection = ctx.connection.requestRejection({ headers: req.headers });
+      if (rejection !== undefined) return send(res, rejection, { error: 'unauthorized' });
+      if (req.method !== 'GET') return send(res, 405, { error: 'method not allowed' });
+      let sessionId = null;
+      try {
+        sessionId = new URL(req.url ?? '/', 'http://localhost').searchParams.get('session');
+      } catch {
+        sessionId = null;
+      }
+      if (sessionId === null || sessionId === '') return send(res, 400, { error: 'session is required' });
+
+      let session;
+      try {
+        const store = ctx.get('sessions');
+        session = store === undefined ? undefined : store.get(sessionId);
+      } catch {
+        session = undefined;
+      }
+      // A conversation that already ended keeps its balance behaviour and just reports no tokens.
+      if (session === undefined) {
+        return send(res, 200, { session: sessionId, live: false, ...foldSessionUsage([]) });
+      }
+      let events;
+      try {
+        events = session.snapshotEvents();
+      } catch {
+        return send(res, 200, { session: sessionId, live: false, ...foldSessionUsage([]) });
+      }
+      return send(res, 200, { session: sessionId, live: true, ...foldSessionUsage(events) });
+    },
+  });
+  ctx.effect(() => sessionDispose);
 }

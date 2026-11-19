@@ -34,7 +34,7 @@ node scripts/probe-provider.mjs --id <provider-id> --base https://<base-url> --k
 在 DSH 的插件安装框输入：
 
 ```
-@breey05/dsh-balance-widget@1.4.3
+@breey05/dsh-balance-widget@1.4.4
 ```
 
 也可使用 GitHub 仓库地址 `git+https://github.com/BREEY05/dsh-balance-widget.git`，或安装本地目录。需要 DSH `>=0.2.1-rc.2 <0.3.0`。安装后刷新当前页面。
@@ -45,10 +45,12 @@ node scripts/probe-provider.mjs --id <provider-id> --base https://<base-url> --k
 
 - 使用会话的 `modelSelection` projection 订阅模型选择；空白会话使用 Host 模型目录提供的默认供应商。
 - 每个供应商、每个会话分别保存消费记录，切换后不会把不同钱包的差额记作消费。切换期间迟到的请求不会污染新供应商数据。
-- 点余额入口查看余额、观察到的会话消耗、今日消耗和刷新按钮。
-- 余额来自供应商结算快照，并非逐 token 实时计费。消耗按观察到的余额下降估算；同账号其他设备的使用也可能计入，切换后首次读取仅建立基线。
+- 点余额入口查看余额、本对话消耗、今日消耗、本对话 token 与请求数，以及刷新按钮。
+- 本对话消耗优先取供应商返回的计费总额（如 sourcesdata 的 `usage.total.actual_cost`）：Host 记录进入该对话时的累计值，之后只把增量算给这段对话，因此充值、赠送额度到期或改价都不会被误记成消耗。
+- 供应商不返回计费字段时，消耗回退为观察到的余额下降估算；同账号其他设备的使用可能被计入，切换后首次读取仅建立基线。
+- 本对话 token 数直接累加会话日志里每次模型调用上报的 `usage`（含缓存命中/写入与推理 token），按 `assistant/message` 的消息 id 去重，不需要任何价格表。
 - 每五分钟轮询，聊天节点变化后延迟读取，普通读取最少间隔 45 秒；失败后退避 2–15 分钟。切换供应商立即启动新读取，手动刷新可主动读取。
-- 消耗计数保存在浏览器 localStorage/sessionStorage，不包含密钥。卸载后可通过清除站点数据移除。多个标签页同时观察同一钱包可能重复计数，跨标签页同时写入也可能竞争；这些记录仅作估算，账单以供应商为准。
+- 消耗计数与每个对话的计费基线保存在浏览器 localStorage/sessionStorage，不包含密钥。卸载后可通过清除站点数据移除。多个标签页同时观察同一钱包可能重复计数，跨标签页同时写入也可能竞争；这些记录仅作估算，账单以供应商为准。
 - Host 通过受保护路由请求供应商接口；API Key 留在 Host，浏览器只拿到余额数字。自动发现时会用同一把 Key 依次探测该供应商 `baseURL` 下的若干常见余额路径，这会出现在供应商的访问日志里。无遥测，无外部脚本，无运行时依赖。
 - 本插件在 DSH Host 进程内运行；只安装你信任的插件。
 
@@ -59,9 +61,9 @@ node scripts/probe-provider.mjs --id <provider-id> --base https://<base-url> --k
 
 ## 开发与发布
 
-`npm test` 检查路由选择、账户钱包合计、未知/重命名供应商、自动发现与缓存、profile YAML 解析、消费隔离和迟到请求。测试使用模拟响应，不代表真实供应商连通性。
+`npm test` 检查路由选择、账户钱包合计、未知/重命名供应商、自动发现与缓存、profile YAML 解析、消费隔离、迟到请求、计费总额解析与对话 token 累加。测试使用模拟响应，不代表真实供应商连通性。
 
-`client.js` 注册 `conversation.composer.dock`；`index.js` 按 `SOURCES` 为每个供应商注册一条受保护路由（`/api/aigocode-usage`、`/api/taffy-usage`、`/api/tafy-usage`、`/api/ds-usage`、`/api/deepseek-usage`），并额外注册一条通用路由 `/api/provider-balance?provider=<id>` 负责自动发现。保留原始图标及中英文本地化。
+`client.js` 注册 `conversation.composer.dock`；`index.js` 按 `SOURCES` 为每个供应商注册一条受保护路由（`/api/aigocode-usage`、`/api/taffy-usage`、`/api/tafy-usage`、`/api/ds-usage`、`/api/deepseek-usage`），并额外注册通用路由 `/api/provider-balance?provider=<id>`（负责自动发现）与 `/api/session-usage?session=<id>`（读取会话日志里的真实 token 用量）。保留原始图标及中英文本地化。
 
 社区市场收录通过向 [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/blob/main/contributing.md) 提交目录 PR；npm 发布本身不会自动完成首次收录。后续版本由市场定期探测。
 

@@ -45,13 +45,15 @@ window.__ModuleLoader__.load({
         'label.total': 'Available',
         'label.balance': 'Recharge balance',
         'label.bonus': 'Bonus credit',
-        'label.sessionSpent': 'This session',
+        'label.sessionSpent': 'This conversation',
         'label.todaySpent': 'Today',
+        'label.tokens': 'Tokens in / out',
+        'label.requests': 'Requests this conversation',
         'label.updatedAt': 'Updated {time}',
         'action.refresh': 'Refresh',
         'action.usage': 'Usage',
         'action.topup': 'Top up',
-        'note.spend': 'Spend is inferred from balance drops; it updates after each request settles.',
+        'note.spend': 'Spend uses the provider-reported billed total when there is one and balance drops otherwise; tokens come from this conversation’s session log.',
         'note.signIn': 'Sign in under Settings → Account to show the balance here.',
         'note.loading': 'Reading the account balance…',
         'error.failed': 'Could not read the balance.',
@@ -66,13 +68,15 @@ window.__ModuleLoader__.load({
         'label.total': '剩余额度',
         'label.balance': '充值余额',
         'label.bonus': '赠金',
-        'label.sessionSpent': '本会话消耗',
+        'label.sessionSpent': '本对话消耗',
         'label.todaySpent': '今日消耗',
+        'label.tokens': '输入 / 输出 token',
+        'label.requests': '本对话请求数',
         'label.updatedAt': '更新于 {time}',
         'action.refresh': '刷新',
         'action.usage': '用量明细',
         'action.topup': '充值',
-        'note.spend': '消耗额度按余额下降推算，请求结算后更新。',
+        'note.spend': '消耗优先取供应商返回的计费总额，取不到时按余额下降推算；token 数来自本对话的会话日志。',
         'note.signIn': '请先在 设置 → 账号 中登录 DeepSeek 账号。',
         'note.loading': '正在读取账号余额…',
         'error.failed': '无法读取余额。',
@@ -143,6 +147,12 @@ window.__ModuleLoader__.load({
       const value = micro / MICRO;
       const text = value < 0.01 ? value.toFixed(4) : value.toFixed(2);
       return symbol + text;
+    }
+
+    /** Token and request counts: grouped thousands, no decimal tail. */
+    function formatCount(value) {
+      if (typeof value !== 'number' || !Number.isFinite(value)) return '—';
+      return value.toLocaleString(undefined, { maximumFractionDigits: 0 });
     }
 
     function localDateKey() {
@@ -305,6 +315,55 @@ window.__ModuleLoader__.load({
       }
     }
 
+    /** sessionStorage key for the billed-total baseline each conversation started from. */
+    const COSTBASE_KEY = 'dsh.api-balance.providers.costbase.v2.';
+
+    /** Normalize the Host's `spent` block into integer millionths. */
+    function normalizeCost(raw) {
+      if (raw === null || typeof raw !== 'object') return null;
+      const unit = String(raw.unit ?? 'USD').toUpperCase() === 'CNY' ? 'CNY' : 'USD';
+      const total = toMicro(raw.total);
+      const today = toMicro(raw.today);
+      if (total === null && today === null) return null;
+      return { currency: unit, total, today };
+    }
+
+    /** Conversation id -> the provider's billed total when that conversation was first seen. */
+    function readCostBaselines(provider) {
+      const stored = new Map();
+      try {
+        const raw = window.sessionStorage.getItem(COSTBASE_KEY + provider);
+        if (raw === null) return stored;
+        const parsed = JSON.parse(raw);
+        if (parsed === null || typeof parsed !== 'object') return stored;
+        for (const [sessionId, amounts] of Object.entries(parsed)) {
+          if (amounts === null || typeof amounts !== 'object') continue;
+          const micro = new Map();
+          for (const [currency, value] of Object.entries(amounts)) {
+            if (typeof value === 'number' && Number.isFinite(value)) micro.set(currency, Math.round(value));
+          }
+          if (micro.size > 0) stored.set(sessionId, micro);
+        }
+      } catch {
+        return stored;
+      }
+      return stored;
+    }
+
+    function writeCostBaseline(provider, sessionId, currency, micro) {
+      const stored = readCostBaselines(provider);
+      let target = stored.get(sessionId);
+      if (target === undefined) stored.set(sessionId, target = new Map());
+      target.set(currency, micro);
+      try {
+        const payload = {};
+        for (const [id, amounts] of [...stored].slice(-50)) payload[id] = Object.fromEntries(amounts);
+        window.sessionStorage.setItem(COSTBASE_KEY + provider, JSON.stringify(payload));
+      } catch {
+        // Without storage the conversation still counts from this read instead of from zero.
+      }
+    }
+
     // -------------------------------------------------------------------- store
 
     /**
@@ -360,6 +419,14 @@ window.__ModuleLoader__.load({
         sessionId: undefined,
         sessionSpent: readSessionSpend(provider),
         today,
+        /** Provider-reported billed total/today, when the usage endpoint exposes one. */
+        cost: null,
+        /** This conversation's provider-billed spend, in millionths. */
+        costSpent: null,
+        /** Today's provider-billed spend keyed by currency, when reported. */
+        costToday: null,
+        /** Live session-log token totals for this conversation. */
+        tokens: null,
         flash: null,
         flashAt: 0,
         inflight: false,
@@ -381,7 +448,9 @@ window.__ModuleLoader__.load({
           message: state.message,
           sessionId: state.sessionId,
           sessionSpent: session === undefined ? Object.freeze({}) : Object.freeze(Object.fromEntries(session)),
-          todaySpent: Object.freeze({ ...state.today.micro }),
+          costSpent: state.costSpent,
+          tokens: state.tokens,
+          todaySpent: Object.freeze(state.costToday !== null ? { ...state.costToday } : { ...state.today.micro }),
           flash: state.flash,
           inflight: state.inflight,
         });
@@ -448,8 +517,8 @@ window.__ModuleLoader__.load({
         writeToday(provider, state.today, currency, micro);
       }
 
-      function applyBalances(balances) {
-        if (lastWallets !== null && state.sessionId !== undefined) {
+      function applyBalances(balances, trackDrops) {
+        if (trackDrops && lastWallets !== null && state.sessionId !== undefined) {
           const deltas = [];
           for (const wallet of balances) {
             const before = lastWallets.get(wallet.currency);
@@ -476,12 +545,78 @@ window.__ModuleLoader__.load({
         lastWallets = new Map(balances.map((wallet) => [wallet.currency, wallet.micro]));
       }
 
+      /**
+       * Attribute the provider's own billed total to the open conversation.
+       *
+       * That total covers the whole account, so the first reading inside a conversation becomes
+       * its baseline and the difference is what the conversation added. Unlike a balance drop this
+       * does not move on a top-up, on expiring bonus credit, or on a price change; it is the amount
+       * the provider says it charged.
+       */
+      function applyCost(cost) {
+        state.cost = cost;
+        if (cost === null) return;
+        if (cost.today !== null) state.costToday = { [cost.currency]: cost.today };
+        if (state.sessionId === undefined || cost.total === null) return;
+        const baseline = readCostBaselines(provider).get(state.sessionId)?.get(cost.currency);
+        if (baseline === undefined) {
+          writeCostBaseline(provider, state.sessionId, cost.currency, cost.total);
+          state.costSpent = { currency: cost.currency, micro: 0 };
+          return;
+        }
+        const micro = cost.total - baseline;
+        state.costSpent = { currency: cost.currency, micro: micro > 0 ? micro : 0 };
+      }
+
+      /** Read what this conversation has actually used out of the Host's session log. */
+      async function refreshUsage() {
+        const sessionId = state.sessionId;
+        if (sessionId === undefined || disposed) return;
+        let response;
+        try {
+          response = await fetch('/api/session-usage?session=' + encodeURIComponent(String(sessionId)), {
+            method: 'GET',
+            headers: { Accept: 'application/json' },
+            cache: 'no-store',
+          });
+        } catch {
+          return;
+        }
+        if (!response.ok) return;
+        let payload;
+        try {
+          payload = await response.json();
+        } catch {
+          return;
+        }
+        if (disposed || state.sessionId !== sessionId) return;
+        const tokens = payload?.tokens;
+        if (tokens === null || typeof tokens !== 'object') return;
+        const count = (value) => {
+          const number = typeof value === 'number' ? value : Number(value);
+          return Number.isFinite(number) && number > 0 ? Math.round(number) : 0;
+        };
+        state.tokens = Object.freeze({
+          requests: count(payload?.requests),
+          input: count(tokens.inputTokens),
+          output: count(tokens.outputTokens),
+          cacheRead: count(tokens.cacheReadTokens),
+          total: count(tokens.totalTokens),
+          models: Object.freeze(Array.isArray(payload.models) ? payload.models : []),
+        });
+        emit();
+      }
+
       function succeed(outcome) {
         if (disposed) return;
         const recharge = normalizeWallets(outcome.value);
         const bonus = normalizeWallets(outcome.bonusWallets);
         const balances = mergeWallets(recharge, bonus);
-        applyBalances(balances);
+        const cost = outcome.cost === undefined ? null : outcome.cost;
+        // The billed total is authoritative when the provider reports it; balance drops would then
+        // double-count the same spending.
+        applyBalances(balances, cost === null);
+        applyCost(cost);
         state.balances = balances;
         state.recharge = recharge;
         state.bonus = bonus;
@@ -583,6 +718,7 @@ window.__ModuleLoader__.load({
         succeed({
           value: [{ currency, balance: numeric / MICRO }],
           bonusWallets: [],
+          cost: normalizeCost(payload?.spent),
         });
       }
 
@@ -612,6 +748,11 @@ window.__ModuleLoader__.load({
         if (state.sessionId === sessionId) return false;
         state.sessionId = sessionId;
         state.flash = null;
+        // Everything below is per conversation: the billed baseline is re-read on the next poll.
+        state.costSpent = null;
+        state.costToday = null;
+        state.tokens = null;
+        lastWallets = null;
         emit();
         return true;
       }
@@ -639,6 +780,7 @@ window.__ModuleLoader__.load({
         getSnapshot,
         subscribe,
         requestRead,
+        refreshUsage,
         setSession,
         dispose,
       };
@@ -860,6 +1002,7 @@ window.__ModuleLoader__.load({
 
         React.useEffect(() => {
           if (store.setSession(sessionId)) store.requestRead('session');
+          void store.refreshUsage();
         }, [sessionId, store]);
 
         React.useEffect(() => {
@@ -885,7 +1028,11 @@ window.__ModuleLoader__.load({
         React.useEffect(() => {
           if (nodeCount > lastNodeCount.current) {
             lastNodeCount.current = nodeCount;
-            const ids = BURST_MS.map((ms) => window.setTimeout(() => store.requestRead('message'), ms));
+            const ids = BURST_MS.map((ms) => window.setTimeout(() => {
+              store.requestRead('message');
+              // The session log gains the usage record with the assistant message, so re-fold it.
+              void store.refreshUsage();
+            }, ms));
             return () => {
               for (const id of ids) window.clearTimeout(id);
             };
@@ -915,7 +1062,17 @@ window.__ModuleLoader__.load({
         }, [open]);
 
         const primary = primaryWallet(snap.balances);
-        const sessionSpent = primary === undefined ? 0 : snap.sessionSpent[primary.currency] ?? 0;
+        /**
+         * When the provider reports what it billed, that number is the conversation's spend. The
+         * balance-drop estimate stays as the fallback for providers that expose only a balance.
+         */
+        const billed = snap.costSpent;
+        const spentCurrency = billed !== null ? billed.currency : primary === undefined ? undefined : primary.currency;
+        const sessionSpent = billed !== null
+          ? billed.micro
+          : primary === undefined
+            ? 0
+            : snap.sessionSpent[primary.currency] ?? 0;
         const low = primary !== undefined && primary.micro > -1 && primary.micro < LOW_MICRO;
         /** A failed refresh keeps showing the last settled figure instead of blanking the pill. */
         const stale = snap.phase === 'error' && primary !== undefined;
@@ -927,7 +1084,7 @@ window.__ModuleLoader__.load({
         else if (snap.phase === 'error' && !stale) stateLabel = t('pill.error');
 
         const balanceText = primary === undefined ? '' : formatBalance(primary.micro, primary.currency);
-        const spentText = primary === undefined ? '' : formatSpent(sessionSpent, primary.currency);
+        const spentText = spentCurrency === undefined ? '' : formatSpent(sessionSpent, spentCurrency);
         const aria = stateLabel !== null ? stateLabel : t('pill.title', { balance: balanceText, spent: spentText });
         const tone =
           snap.phase === 'error' || snap.phase === 'unavailable' || stale ? 'warn' : low ? 'warn' : undefined;
@@ -970,12 +1127,25 @@ window.__ModuleLoader__.load({
             );
           }
         }
-        if (primary !== undefined) {
+        const spendCurrency = spentCurrency ?? (snap.cost === null ? undefined : snap.cost.currency);
+        if (spendCurrency !== undefined) {
           rows.push(
             h('dt', { key: 'dt-session' }, t('label.sessionSpent')),
-            h('dd', { key: 'dd-session' }, formatSpent(sessionSpent, primary.currency)),
+            h(
+              'dd',
+              { key: 'dd-session', 'data-billed': billed === null ? 'false' : 'true' },
+              formatSpent(sessionSpent, spendCurrency),
+            ),
             h('dt', { key: 'dt-today' }, t('label.todaySpent')),
-            h('dd', { key: 'dd-today' }, formatSpent(snap.todaySpent[primary.currency] ?? 0, primary.currency)),
+            h('dd', { key: 'dd-today' }, formatSpent(snap.todaySpent[spendCurrency] ?? 0, spendCurrency)),
+          );
+        }
+        if (snap.tokens !== null) {
+          rows.push(
+            h('dt', { key: 'dt-tokens' }, t('label.tokens')),
+            h('dd', { key: 'dd-tokens' }, formatCount(snap.tokens.input) + ' / ' + formatCount(snap.tokens.output)),
+            h('dt', { key: 'dt-requests' }, t('label.requests')),
+            h('dd', { key: 'dd-requests' }, formatCount(snap.tokens.requests)),
           );
         }
 

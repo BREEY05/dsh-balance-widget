@@ -10,7 +10,7 @@ let api;
 let source = fs.readFileSync(new URL('./client.js', import.meta.url), 'utf8');
 source = source.replace(
   "return { inject: ['slots'",
-  "window.testApi = { createStore, makeWidget, PROVIDERS, panelPlacement }; return { inject: ['slots'",
+  "window.testApi = { createStore, makeWidget, PROVIDERS, panelPlacement, normalizeCost }; return { inject: ['slots'",
 );
 const storage = () => {
   const m = new Map();
@@ -176,6 +176,12 @@ assert.equal(place(rect(100, 20, 80, 24), rect(0, 0, 300, 200)).top, 52);
 // Near the right edge it is clamped fully on screen.
 assert.equal(place(rect(1180, 400, 20, 24), rect(0, 0, 300, 200)).left, 888);
 
+// The provider's own billed total is carried into the store as integer millionths.
+same(api.normalizeCost({ unit: 'USD', total: 1.81109016, today: 0.198732204 }), { currency: 'USD', total: 1811090, today: 198732 });
+same(api.normalizeCost({ unit: 'cny', total: '0.5', today: null }), { currency: 'CNY', total: 500000, today: null });
+assert.equal(api.normalizeCost({ unit: 'USD', total: null, today: null }), null);
+assert.equal(api.normalizeCost(undefined), null);
+
 // ------------------------------------------------------------- host half
 
 const host = await import(new URL('./index.js', import.meta.url));
@@ -200,7 +206,7 @@ host.apply({
   },
   effect: (fn) => fn(),
 });
-assert.deepEqual(paths.sort(), [...hostIds.map((id) => host.SOURCES[id].path), '/api/provider-balance'].sort());
+assert.deepEqual(paths.sort(), [...hostIds.map((id) => host.SOURCES[id].path), '/api/provider-balance', '/api/session-usage'].sort());
 
 // Profile YAML is parsed just far enough to learn each provider's base URL and key ref.
 const parsed = host.parseProviderBlocks(`
@@ -304,7 +310,91 @@ outcome = await host.readUsage(discovered, { ...host.SOURCES.ds, id: 'ds' });
 assert.equal(outcome.status, 502);
 assert.match(outcome.body.error, /HTTP 500/);
 
+// What a conversation cost comes from the provider's billed total, not from a balance drop: a
+// top-up or expiring bonus moves the balance without being spend.
+assert.deepEqual(
+  host.extractCost({ unit: 'USD', usage: { total: { actual_cost: 1.81, cost: 6.03 }, today: { actual_cost: 0.19 } } }),
+  { total: 1.81, today: 0.19, unit: 'USD' },
+);
+// Gateways that only publish per-day rows are summed instead.
+assert.deepEqual(
+  host.extractCost({ currency: 'CNY', daily_usage: [{ actual_cost: 0.5 }, { actual_cost: '0.25' }] }),
+  { total: 0.75, today: null, unit: 'CNY' },
+);
+// Per-model rows prefer the discounted amount that was actually charged.
+assert.deepEqual(
+  host.extractCost({ data: { model_stats: [{ model: 'a', actual_cost: 2, cost: 6 }, { model: 'b', actual_cost: 1, cost: 3 }] } }),
+  { total: 3, today: null, unit: 'USD' },
+);
+// A payload that only carries a balance is not spend data.
+assert.equal(host.extractCost({ balance: 5 }), null);
+assert.equal(host.extractCost(null), null);
+
+// Token counts come from the session log, where each completed model call records the provider's
+// own usage; a retried attempt appends the same message id and must not be counted twice.
+const folded = host.foldSessionUsage([
+  { type: 'user/message', data: {} },
+  { type: 'assistant/message', data: { message: { id: 'a', source: { provider: 'sourcecode', model: 'deepseek-flash' } }, usage: { inputTokens: 100, outputTokens: 20, cacheReadTokens: 60 } } },
+  { type: 'assistant/message', data: { message: { id: 'a', source: { provider: 'sourcecode', model: 'deepseek-flash' } }, usage: { inputTokens: 100, outputTokens: 20, cacheReadTokens: 60 } } },
+  { type: 'assistant/message', data: { message: { id: 'b', source: { provider: 'other', model: 'm' } }, usage: { inputTokens: 5, outputTokens: 7 } } },
+]);
+assert.equal(folded.requests, 2);
+assert.equal(folded.tokens.inputTokens, 105);
+assert.equal(folded.tokens.outputTokens, 27);
+assert.equal(folded.tokens.cacheReadTokens, 60);
+assert.equal(folded.tokens.totalTokens, 132);
+assert.deepEqual(folded.models.map((row) => row.provider + '/' + row.model).sort(), ['other/m', 'sourcecode/deepseek-flash']);
+assert.deepEqual(host.foldSessionUsage([]), {
+  requests: 0,
+  tokens: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, totalTokens: 0 },
+  models: [],
+});
+
+// The session route reads the log of the session named in the query string; an ended conversation
+// must answer 200 with zeroes instead of failing the whole pill.
+const routeEvents = [
+  { type: 'assistant/message', data: { message: { id: 'a', source: { provider: 'sourcecode', model: 'deepseek-flash' } }, usage: { inputTokens: 100, outputTokens: 20 } } },
+];
+const routes = new Map();
+host.apply({
+  credentials: { resolve: async () => undefined },
+  connection: { requestRejection: () => undefined },
+  get: (key) => (key === 'sessions' ? { get: (id) => (id === 'live-1' ? { snapshotEvents: () => routeEvents } : undefined) } : undefined),
+  webServer: {
+    register: (route) => {
+      routes.set(route.path, route);
+      return () => {};
+    },
+  },
+  effect: (fn) => fn(),
+});
+const callSessionRoute = async (url, method = 'GET', headers = {}) => {
+  const route = routes.get('/api/session-usage');
+  const response = {
+    status: 0,
+    body: undefined,
+    writeHead(status) { this.status = status; },
+    end(text) { this.body = JSON.parse(text); },
+  };
+  await route.handler({ method, url, headers }, response);
+  return response;
+};
+const live = await callSessionRoute('/api/session-usage?session=live-1');
+assert.equal(live.status, 200);
+assert.equal(live.body.live, true);
+assert.equal(live.body.session, 'live-1');
+assert.equal(live.body.requests, 1);
+assert.equal(live.body.tokens.inputTokens, 100);
+assert.equal(live.body.models[0].provider + '/' + live.body.models[0].model, 'sourcecode/deepseek-flash');
+const ended = await callSessionRoute('/api/session-usage?session=gone');
+assert.equal(ended.status, 200);
+assert.equal(ended.body.live, false);
+assert.equal(ended.body.requests, 0);
+assert.equal((await callSessionRoute('/api/session-usage')).status, 400);
+assert.equal((await callSessionRoute('/api/session-usage?session=live-1', 'POST')).status, 405);
+assert.equal((await callSessionRoute('/api/session-usage?session=live-1', 'GET', {})).status, 200);
+
 globalThis.fetch = realFetch;
 fs.rmSync(dir, { recursive: true, force: true });
 
-console.log('PASS: provider routes, wallet total, renamed provider ids, official DeepSeek wallet, generic discovery, profile parsing, isolated counters, disposed response, host balance sources');
+console.log('PASS: provider routes, wallet total, renamed provider ids, official DeepSeek wallet, generic discovery, profile parsing, isolated counters, disposed response, host balance sources, billed conversation cost, session token fold');

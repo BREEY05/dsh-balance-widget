@@ -1,6 +1,6 @@
 {
   "name": "@breey05/dsh-balance-widget",
-  "version": "1.4.3",
+  "version": "1.4.4",
   "scripts": {
     "test": "node switching.test.mjs"
   },
@@ -8,7 +8,7 @@
     "access": "public"
   },
   "type": "module",
-  "description": "Provider-aware API balance and observed spend that follow the selected Harness model.",
+  "description": "Provider-aware API balance plus what the open conversation actually cost and used.",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/BREEY05/dsh-balance-widget.git"
