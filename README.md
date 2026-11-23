@@ -2,24 +2,19 @@
 
 在 DeepSeek Harness 输入框下显示当前模型供应商的余额。切换模型供应商时，余额入口立即切换并重新读取对应接口。
 
-## 支持的供应商
+## 供应商自动识别
 
-| 模型供应商 ID | 余额来源 | 凭据 |
-|---|---|---|
-| `aigocode` | `https://api.aigocode.dev/v1/usage` 的 `balance`，USD | 本地 `AIGOCODE_API_KEY` |
-| `taffy` | `https://taffy.work/v1/usage` 的 remaining / quota.remaining / balance，USD | 本地 `TAFFY_API_KEY` |
-| `tafy` | 同上（旧 ID，保留兼容） | 本地 `TAFFY_API_KEY` |
-| `ds` | 同上，但使用该路由自己的密钥 | 本地 `DS_API_KEY` |
-| `deepseek-official` | `https://api.deepseek.com/user/balance` 的 `balance_infos[].total_balance`，CNY | 本地 `DEEPSEEK_API_KEY` |
-| `deepseek-account` | DSH 账号 Remote 的充值与赠金钱包 | 设置中的 DeepSeek 登录 |
+无需预先登记供应商 ID。插件会读取 DSH profile 中该供应商的 `baseURL` 和 `apiKeyEnv`，并使用对应凭据自动探测余额接口。成功发现的接口会按来源缓存，后续读取时复用。
 
-上表是内置的常见供应商 ID。多个 ID 可能指向同一钱包但配置不同密钥（例如 `taffy`、`tafy`、`ds` 都走 `taffy.work`），插件按 ID 各自读取，因此改 ID 后余额不会静默变空。不同模型如果属于同一供应商，使用同一钱包。
+探测会依次尝试以下常见余额路径：
+
+`/user/balance`、`/v1/usage`、`/v1/credits`、`/v1/dashboard/billing/subscription`、`/api/user/self`、`/v1/balance`、`/api/usage`、`/usage`
 
 **New API 的 Key 配额不是账户余额。** 对没有预设额度接口的模型路由，插件先不带凭据读取同源 `/api/status`；若站点声明有效的 `quota_per_unit` 和 `quota_display_type`，再用当前供应商的 Key 请求同源 `/api/usage/token/`，拒绝重定向。只有额度字段验证通过才记住该接口；每次都读取新额度，公开换算配置最多复用十分钟。`bbbbk` 等已知站点在状态页不可用时仍可查原始额度。只有站点明确给出 USD 显示类型和有效换算比例时才显示美元，否则保留原始额度单位。无限额单独显示。Key 的累计已用额度不计入本对话消耗；对话 token 和请求数仍来自会话日志。
 
-**其余不在表中的供应商会自动发现。** 插件从 `~/.dsh/profiles/*/cordis.patch.yml`（及 `cordis.yml`）读取该 ID 的 `baseURL`、`apiKeyEnv`，再用这把 Key 依次探测公开的余额接口：`/user/balance`、`/v1/usage`、`/v1/credits`、`/v1/dashboard/billing/subscription`、`/api/user/self`、`/v1/balance`、`/api/usage`、`/usage`。命中后就地解析余额（支持 `balance`、`remaining`、`total_balance`、`credits`、One-API 的 `quota/500000` 等常见字段与 `CNY`/`USD`）。同一个域名只探测一次并缓存结果，轮询时不再重复试探。
+接口需支持使用该供应商的 API Key 进行 Bearer 认证，并返回插件能够识别的数值余额。凭据优先读取 profile 声明的 `apiKeyEnv`；若未声明，则按供应商 ID 推导环境变量名，例如 `my-provider` 对应 `MY_PROVIDER_API_KEY`。
 
-注意两点：需要余额接口使用同一把 API Key 做 Bearer 认证（大多数中转/官方实现如此）；若该供应商只提供网页登录态才能看的额度，或未声明 `baseURL`/`apiKeyEnv`，后端会返回“没有可用余额接口 / 缺少凭据”，此时在 `index.js` 的 `SOURCES` 中显式加一行 `usageUrl` 即可。`client.js` 的 `PROVIDERS` 只影响显示名称，未列出的 ID 直接用 ID 本身作标签。
+少数常见供应商有内置快捷配置，用于指定专属接口或凭据名；这不是固定的支持名单。只要 profile 提供 `baseURL` 和可用凭据，其他供应商也会走自动发现流程。仅能通过网页登录态查看、或不符合上述接口和认证方式的服务，无法自动读取。
 
 ## 接入一个新供应商
 
@@ -29,7 +24,7 @@
 node scripts/probe-provider.mjs --id <provider-id> --base https://<base-url> --key-env <ENV_NAME>
 ```
 
-脚本按环境变量、再按 `~/.dsh/.credentials.yaml` 的顺序取 Key，依次试 `/v1/models`、`/v1/chat/completions`、`/v1/responses`、`/v1/messages` 判断是 OpenAI 兼容还是 Anthropic 兼容，再走一遍上面的余额探测，最后直接打印可粘贴进 `cordis.patch.yml` 的 `llm-pi-ai.config.providers` 片段。确认片段后再写入 profile，余额侧无需改代码。
+脚本按环境变量、再按 `~/.dsh/.credentials.yaml` 的顺序取 Key，依次试 `/v1/models`、`/v1/chat/completions`、`/v1/responses`、`/v1/messages` 判断是 OpenAI 兼容还是 Anthropic 兼容协议，并探测余额接口。
 
 ## 安装与更新
 
@@ -46,14 +41,15 @@ node scripts/probe-provider.mjs --id <provider-id> --base https://<base-url> --k
 ## 行为与限制
 
 - 使用会话的 `modelSelection` projection 订阅模型选择；空白会话使用 Host 模型目录提供的默认供应商。
-- 每个供应商、每个会话分别保存消费记录，切换后不会把不同钱包的差额记作消费。切换期间迟到的请求不会污染新供应商数据。
+- 每个���应商、每个会话分别保存消费记录，切换后不会把不同钱包的差额记作消费。切换期间迟到的请求不会污染新供应商数据。
+- 本条消息消耗按发送前后读到的差额估算，共用 Key 的其他请求可能被计入；没有基线时显示 `—`。
 - 点余额入口查看余额、本对话消耗、今日消耗、本对话 token 与请求数，以及刷新按钮。
-- 本对话消耗优先取供应商返回的计费总额（如 sourcesdata 的 `usage.total.actual_cost`）：Host 记录进入该对话时的累计值，之后只把增量算给这段对话，因此充值、赠送额度到期或改价都不会被误记成消耗。
+- 本对话消耗优先取供应商返回的计费总额（如 sourcesdata 的 `usage.total.actual_cost`）：Host 记录进入该对话时的累计值，之后只把增量算给这段对话，因为充值、赠金失效或价格变化不应被误算成消耗。
 - 供应商不返回计费字段时，消耗回退为观察到的余额下降估算；同账号其他设备的使用可能被计入，切换后首次读取仅建立基线。
 - 本对话 token 数直接累加会话日志里每次模型调用上报的 `usage`（含缓存命中/写入与推理 token），按 `assistant/message` 的消息 id 去重，不需要任何价格表。
 - 每五分钟轮询，聊天节点变化后延迟读取，普通读取最少间隔 45 秒；失败后退避 2–15 分钟。切换供应商立即启动新读取，手动刷新可主动读取。
-- 消耗计数与每个对话的计费基线保存在浏览器 localStorage/sessionStorage，不包含密钥。卸载后可通过清除站点数据移除。多个标签页同时观察同一钱包可能重复计数，跨标签页同时写入也可能竞争；这些记录仅作估算，账单以供应商为准。
-- Host 通过受保护路由请求供应商接口；API Key 留在 Host，浏览器只拿到余额数字。自动发现时会用同一把 Key 依次探测该供应商 `baseURL` 下的若干常见余额路径，这会出现在供应商的访问日志里。无遥测，无外部脚本，无运行时依赖。
+- 消耗计数与每个对话的计费基线保存在浏览器 localStorage/sessionStorage，不包含密钥。卸载后可通过清除站点数据移除。多个标签页同时观察同一钱包时，共享消费信息并避免重复计数。
+- Host 通过受保护路由请求供应商接口；API Key 留在 Host，浏览器只拿到余额数字。自动发现时会用同一把 Key 依次探测该供应商 `baseURL` 下的常见余额接口。
 - 本插件在 DSH Host 进程内运行；只安装你信任的插件。
 
 原账号版截图（当前版本额外显示供应商名称）：
@@ -63,10 +59,10 @@ node scripts/probe-provider.mjs --id <provider-id> --base https://<base-url> --k
 
 ## 开发与发布
 
-`npm test` 检查路由选择、账户钱包合计、未知/重命名供应商、自动发现与缓存、profile YAML 解析、消费隔离、迟到请求、计费总额解析与对话 token 累加。测试使用模拟响应，不代表真实供应商连通性。
+`npm test` 棡查路由选择、账户钱包合计、未知/重命名供应商、自动发现与缓存、profile YAML 解析、消费隔离、迟到请求、计费总额解析与对话 token 累计。
 
-`client.js` 注册 `conversation.composer.dock`；`index.js` 按 `SOURCES` 为每个供应商注册一条受保护路由（`/api/aigocode-usage`、`/api/taffy-usage`、`/api/tafy-usage`、`/api/ds-usage`、`/api/deepseek-usage`），并额外注册通用路由 `/api/provider-balance?provider=<id>`（负责自动发现）与 `/api/session-usage?session=<id>`（读取会话日志里的真实 token 用量）。保留原始图标及中英文本地化。
+`client.js` 注册 `conversation.composer.dock`；`index.js` 按 `SOURCES` 为内置供应商快捷配置各路由，并提供通用 `/api/provider-balance` 路由供未知供应商自动发现与读取。
 
-社区市场收录通过向 [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/blob/main/contributing.md) 提交目录 PR；npm 发布本身不会自动完成首次收录。后续版本由市场定期探测。
+社区市场收录通过向 [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/blob/main/contributing.md) 提交目录 PR；npm 发布本身不会自动完成首次收录。
 
 MIT License. 仓库：https://github.com/BREEY05/dsh-balance-widget
