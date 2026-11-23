@@ -1,5 +1,33 @@
 # Changelog
 
+## 1.4.9
+
+- Show estimated spend for the latest user message using the change in reported billing, key usage or wallet balance. Shared-key activity can affect the estimate; without a baseline the panel shows a dash.
+- Remove the redundant key quota note and restore the original menu surface without decorations on the title and action rows.
+
+## 1.4.8
+
+- Fix: the popover showed two stray bordered bands, one behind the title row and one behind the
+  action row. The panel is portaled to `document.body` and painted with the menu background token
+  plus the menu backdrop blur, so the composer underneath bled through as faint rectangles. The
+  panel now uses the opaque `--dsw-alias-bg-layer-1` surface with no blur, and the title and action
+  rows explicitly reset border, outline, background and shadow.
+
+## 1.4.7
+
+- Balance endpoints are now discovered instead of hard-coded: an unknown provider whose site
+  publishes `/api/status` with a quota conversion is probed for a key-scoped quota endpoint without
+  any configuration, and the verified endpoint is cached per origin for ten minutes.
+- An `auth` answer (401/403) stops the probe immediately instead of walking every candidate path, and
+  an unrecognised site reports `no balance endpoint recognized`.
+
+## 1.4.6
+
+- New API style sites (a key-scoped quota instead of an account wallet) now display in the pill and
+  the panel: remaining, granted and used quota, converted only when the site's own `/api/status`
+  publishes a conversion and display unit, and shown in raw quota units otherwise. The key is only
+  ever sent to the site's quota endpoint, and quota usage never counts as this conversation's spend.
+
 ## 1.4.5
 
 - Fix: the pill disappeared completely after 1.4.4. The renderer read `snap.cost` while the store's

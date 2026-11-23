@@ -49,6 +49,12 @@ window.__ModuleLoader__.load({
         'label.todaySpent': 'Today',
         'label.tokens': 'Tokens in / out',
         'label.requests': 'Requests this conversation',
+        'label.messageSpend': 'This message (estimated)',
+        'label.keyQuota': 'Key remaining quota',
+        'label.keyQuotaPill': 'Key',
+        'label.keyQuotaGranted': 'Key quota total',
+        'label.keyQuotaUsed': 'Key quota used',
+        'value.unlimited': 'Unlimited',
         'label.updatedAt': 'Updated {time}',
         'action.refresh': 'Refresh',
         'action.usage': 'Usage',
@@ -72,6 +78,12 @@ window.__ModuleLoader__.load({
         'label.todaySpent': '今日消耗',
         'label.tokens': '输入 / 输出 token',
         'label.requests': '本对话请求数',
+        'label.messageSpend': '本条消息消耗（估算）',
+        'label.keyQuota': 'Key 剩余额度',
+        'label.keyQuotaPill': 'Key',
+        'label.keyQuotaGranted': 'Key 总额度',
+        'label.keyQuotaUsed': 'Key 已用额度',
+        'value.unlimited': '无限额',
         'label.updatedAt': '更新于 {time}',
         'action.refresh': '刷新',
         'action.usage': '用量明细',
@@ -96,8 +108,11 @@ window.__ModuleLoader__.load({
       '.dsbw-delta{color:var(--dsw-alias-label-tertiary)}',
       '.dsbw-delta[data-flash=true]{color:var(--dsw-alias-state-warn-primary);animation:dsbw-pop .9s ease-out}',
       '@keyframes dsbw-pop{0%{transform:translateY(1px);opacity:.45}100%{transform:translateY(0);opacity:1}}',
-      '.dsbw-panel{position:fixed;z-index:1100;box-sizing:border-box;width:max-content;min-width:min(300px,100vw - 24px);max-width:min(440px,100vw - 24px);padding:16px;border-radius:var(--dsw-radius-lg);background:var(--dsw-specific-menu,var(--dsw-alias-bg-overlay));backdrop-filter:var(--dsw-menu-backdrop-filter);-webkit-backdrop-filter:var(--dsw-menu-backdrop-filter);box-shadow:var(--dsw-elevation-prominent);color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px;cursor:default}',
-      '.dsbw-panel-title{display:flex;justify-content:space-between;gap:16px;margin-bottom:8px;color:var(--dsw-alias-label-primary);font-weight:500}',
+      // Keep the original menu surface. The two layout rows should never paint chrome of their own.
+      '.dsbw-panel[role=dialog]>:is(.dsbw-panel-title,.dsbw-actions){background:transparent!important;border:0!important;outline:0!important;box-shadow:none!important;filter:none!important}',
+      '.dsbw-panel[role=dialog]>:is(.dsbw-panel-title,.dsbw-actions)::before,.dsbw-panel[role=dialog]>:is(.dsbw-panel-title,.dsbw-actions)::after{content:none!important}',
+            '.dsbw-panel{position:fixed;z-index:1100;box-sizing:border-box;width:max-content;min-width:min(300px,100vw - 24px);max-width:min(440px,100vw - 24px);padding:16px;border-radius:var(--dsw-radius-lg);background:var(--dsw-specific-menu,var(--dsw-alias-bg-overlay));backdrop-filter:var(--dsw-menu-backdrop-filter);-webkit-backdrop-filter:var(--dsw-menu-backdrop-filter);box-shadow:var(--dsw-elevation-prominent);color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px;cursor:default}',
+      '.dsbw-panel-title{display:flex;justify-content:space-between;gap:16px;margin-bottom:8px;border:0;outline:0;background:none;box-shadow:none;color:var(--dsw-alias-label-primary);font-weight:500}',
       '.dsbw-title-label{display:inline-flex;align-items:center;gap:6px;min-width:0}',
       '.dsbw-title-label svg{flex:none;width:14px;height:14px}',
       '.dsbw-title-value{font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-tertiary)}',
@@ -109,8 +124,8 @@ window.__ModuleLoader__.load({
       '.dsbw-details dd[data-total=true]{color:var(--dsw-alias-label-primary)}',
       '.dsbw-note{margin:10px 0 0;color:var(--dsw-alias-label-tertiary)}',
       '.dsbw-error{margin:8px 0 0;color:var(--dsw-alias-state-error-primary)}',
-      '.dsbw-actions{display:flex;gap:6px;margin-top:12px;align-items:center;flex-wrap:wrap}',
-      '.dsbw-action{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border:none;border-radius:var(--dsw-radius-sm);background:0 0;color:var(--dsw-alias-label-secondary);font:inherit;cursor:pointer;text-decoration:none}',
+      '.dsbw-actions{display:flex;gap:6px;margin-top:12px;align-items:center;flex-wrap:wrap;border:0;outline:0;background:none;box-shadow:none}',
+      '.dsbw-action{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border:none;border-radius:var(--dsw-radius-sm);background:0 0;color:var(--dsw-alias-label-secondary);font:inherit;cursor:pointer;text-decoration:none;box-shadow:none}',
       '.dsbw-action:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}',
       '.dsbw-action:disabled{opacity:.55;cursor:default;background:0 0}',
       '@media (prefers-reduced-motion:reduce){.dsbw-delta[data-flash=true]{animation:none}}',
@@ -153,6 +168,53 @@ window.__ModuleLoader__.load({
     function formatCount(value) {
       if (typeof value !== 'number' || !Number.isFinite(value)) return '—';
       return value.toLocaleString(undefined, { maximumFractionDigits: 0 });
+    }
+
+    /**
+     * Normalize the Host's `keyQuota` block. A New API deployment answers `total_available`,
+     * `total_granted` and `total_used` in raw quota units; the Host converts them to a display
+     * unit only when the site reports one (`/api/status`). Unknown conversions stay in raw quota
+     * units instead of being guessed as dollars.
+     */
+    function normalizeKeyQuota(raw) {
+      if (raw === null || typeof raw !== 'object') return null;
+      const number = (value) => {
+        if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+        if (typeof value !== 'string' || value.trim() === '') return null;
+        const parsed = Number(value);
+        return Number.isFinite(parsed) ? parsed : null;
+      };
+      const unlimited = raw.unlimited === true;
+      const unit = typeof raw.unit === 'string' && raw.unit.trim() !== '' ? raw.unit.trim().toUpperCase() : 'QUOTA';
+      const available = number(raw.available);
+      if (!unlimited && available === null) return null;
+      return Object.freeze({
+        unlimited,
+        unit,
+        available,
+        granted: number(raw.granted),
+        used: number(raw.used),
+      });
+    }
+
+    /**
+     * Quota text. Dollars use the wallet format (two decimals); every other unit is printed as the
+     * provider reported it, because converting raw quota units to money would need a rate this
+     * plugin cannot verify.
+     */
+    function formatQuotaAmount(value, unit) {
+      if (value === null || value === undefined || !Number.isFinite(value)) return '—';
+      if (unit === 'USD') return formatBalance(toMicro(value), 'USD');
+      const shown = Number.isInteger(value) ? String(value) : String(Math.round(value * 100) / 100);
+      return shown + ' ' + unit;
+    }
+
+    /** Key quota for the pill and panel; `unlimitedText` supplies the localized 无限额/Unlimited. */
+    function formatKeyQuota(quota, unlimitedText) {
+      if (quota === null || quota === undefined) return '';
+      if (quota.unlimited) return unlimitedText === undefined ? '∞' : unlimitedText;
+      if (quota.available === null) return '—';
+      return formatQuotaAmount(quota.available, quota.unit);
     }
 
     function localDateKey() {
@@ -427,12 +489,26 @@ window.__ModuleLoader__.load({
         costToday: null,
         /** Live session-log token totals for this conversation. */
         tokens: null,
+        /** Key-scoped quota reported by a New API site; displayed on its own, never as spend. */
+        keyQuota: null,
         flash: null,
         flashAt: 0,
         inflight: false,
       };
       /** Last observed wallet balances, used only to measure drops. */
       let lastWallets = null;
+
+      let userCount = null, sample = null, messageBase = null, messageSpend = null, generation = 0;
+      function observeUsers(n) {
+        if (userCount === n) return;
+        if (userCount === null) { userCount = n; return; } // Mount establishes history, not a new send.
+        messageBase = n === userCount + 1 ? sample : null;
+        sample = null;
+        messageSpend = null;
+        generation++;
+        userCount = n;
+        emit();
+      }
 
       function build() {
         const session = state.sessionId !== undefined ? state.sessionSpent.get(state.sessionId) : undefined;
@@ -448,9 +524,11 @@ window.__ModuleLoader__.load({
           message: state.message,
           sessionId: state.sessionId,
           sessionSpent: session === undefined ? Object.freeze({}) : Object.freeze(Object.fromEntries(session)),
+          messageSpend: messageSpend,
           cost: state.cost,
           costSpent: state.costSpent,
           tokens: state.tokens,
+          keyQuota: state.keyQuota,
           todaySpent: Object.freeze(state.costToday !== null ? { ...state.costToday } : { ...state.today.micro }),
           flash: state.flash,
           inflight: state.inflight,
@@ -608,7 +686,7 @@ window.__ModuleLoader__.load({
         emit();
       }
 
-      function succeed(outcome) {
+      function succeed(outcome, readGeneration) {
         if (disposed) return;
         const recharge = normalizeWallets(outcome.value);
         const bonus = normalizeWallets(outcome.bonusWallets);
@@ -618,6 +696,17 @@ window.__ModuleLoader__.load({
         // double-count the same spending.
         applyBalances(balances, cost === null);
         applyCost(cost);
+        // Independent of the wallets: a key quota never feeds the spend ledgers above.
+        state.keyQuota = outcome.keyQuota === undefined ? null : outcome.keyQuota;
+        if (generation === readGeneration) {
+          const q = state.keyQuota;
+          const w = balances[0];
+          sample = cost?.total != null ? {source:'bill', unit:cost.currency, value:cost.total}
+            : q?.used != null && q.unit === 'USD' ? {source:'key', unit:q.unit, value:toMicro(q.used)}
+            : w ? {source:'wallet', unit:w.currency, value:-w.micro} : null;
+          messageSpend = sample && sample.value != null && messageBase && sample.source === messageBase.source && sample.unit === messageBase.unit && sample.value >= messageBase.value
+            ? {currency:sample.unit, micro:sample.value - messageBase.value} : null;
+        }
         state.balances = balances;
         state.recharge = recharge;
         state.bonus = bonus;
@@ -638,6 +727,7 @@ window.__ModuleLoader__.load({
       }
 
       async function readOnce() {
+        const readGeneration = generation;
         const adapter = adapterFor(provider);
         if (!adapter) {
           state.phase = 'unavailable';
@@ -656,7 +746,7 @@ window.__ModuleLoader__.load({
             lastWallets = null;
             state.updatedAt = Date.now();
           } else if (Array.isArray(outcome?.value)) {
-            succeed(outcome);
+            succeed(outcome, readGeneration);
           } else {
             fail('unavailable', 'DeepSeek account balance unavailable');
           }
@@ -679,6 +769,7 @@ window.__ModuleLoader__.load({
           state.balances = [];
           state.recharge = [];
           state.bonus = [];
+          state.keyQuota = null;
           lastWallets = null;
           state.updatedAt = Date.now();
           return;
@@ -710,8 +801,15 @@ window.__ModuleLoader__.load({
           payload?.data?.remaining ??
           info?.total_balance;
         const numeric = toMicro(remaining);
+        // A New API site can expose only a key-scoped quota; that is the displayed figure then.
+        const keyQuota = normalizeKeyQuota(payload?.keyQuota);
+        const hostError = typeof payload?.error === 'string' && payload.error !== '' ? payload.error : null;
         if (numeric === null) {
-          fail('error', adapter.label + ' usage response has no numeric remaining balance');
+          if (keyQuota === null) {
+            fail('error', hostError ?? adapter.label + ' usage response has no numeric remaining balance');
+            return;
+          }
+          succeed({ value: [], bonusWallets: [], cost: normalizeCost(payload?.spent), keyQuota }, readGeneration);
           return;
         }
         const rawUnit = payload?.unit ?? payload?.quota?.unit ?? payload?.currency ?? info?.currency ?? 'USD';
@@ -720,7 +818,8 @@ window.__ModuleLoader__.load({
           value: [{ currency, balance: numeric / MICRO }],
           bonusWallets: [],
           cost: normalizeCost(payload?.spent),
-        });
+          keyQuota,
+        }, readGeneration);
       }
 
       function requestRead(reason) {
@@ -748,6 +847,8 @@ window.__ModuleLoader__.load({
       function setSession(sessionId) {
         if (state.sessionId === sessionId) return false;
         state.sessionId = sessionId;
+        userCount = sample = messageBase = messageSpend = null;
+        generation++;
         state.flash = null;
         // Everything below is per conversation: the billed baseline is re-read on the next poll.
         state.costSpent = null;
@@ -777,6 +878,7 @@ window.__ModuleLoader__.load({
       }
 
       return {
+        observeUsers,
         activate() { disposed = false; },
         getSnapshot,
         subscribe,
@@ -1025,6 +1127,8 @@ window.__ModuleLoader__.load({
         }, [store]);
 
         const nodeCount = props.useChat === undefined ? 0 : props.useChat((chat) => chat.legacy.nodes.length);
+        const users = props.useChat?.(chat => chat.legacy.nodes.reduce((n, node) => n + ((node.kind ?? node.type) === 'user' ? 1 : 0), 0));
+        React.useEffect(() => { if (users !== undefined) store.observeUsers(users); }, [store, sessionId, users]);
         const lastNodeCount = React.useRef(nodeCount);
         React.useEffect(() => {
           if (nodeCount > lastNodeCount.current) {
@@ -1075,8 +1179,12 @@ window.__ModuleLoader__.load({
             ? 0
             : snap.sessionSpent[primary.currency] ?? 0;
         const low = primary !== undefined && primary.micro > -1 && primary.micro < LOW_MICRO;
+        /* Key quota is its own figure: never summed with the wallets and never used as spend. */
+        const quota = snap.keyQuota;
+        const quotaText = formatKeyQuota(quota, t('value.unlimited'));
+        const quotaTitle = quota === null ? null : t('label.keyQuota') + ' ' + quotaText;
         /** A failed refresh keeps showing the last settled figure instead of blanking the pill. */
-        const stale = snap.phase === 'error' && primary !== undefined;
+        const stale = snap.phase === 'error' && (primary !== undefined || quota !== null);
 
         let stateLabel = null;
         if (snap.phase === 'loading') stateLabel = t('pill.loading');
@@ -1086,26 +1194,51 @@ window.__ModuleLoader__.load({
 
         const balanceText = primary === undefined ? '' : formatBalance(primary.micro, primary.currency);
         const spentText = spentCurrency === undefined ? '' : formatSpent(sessionSpent, spentCurrency);
-        const aria = stateLabel !== null ? stateLabel : t('pill.title', { balance: balanceText, spent: spentText });
+        const ariaParts = [];
+        if (primary !== undefined) ariaParts.push(t('pill.title', { balance: balanceText, spent: spentText }));
+        if (quotaTitle !== null) ariaParts.push(quotaTitle);
+        const aria =
+          stateLabel !== null
+            ? stateLabel
+            : ariaParts.length > 0
+              ? ariaParts.join(' · ')
+              : t('pill.title', { balance: balanceText, spent: spentText });
         const tone =
           snap.phase === 'error' || snap.phase === 'unavailable' || stale ? 'warn' : low ? 'warn' : undefined;
 
         const pillContent = [h(IconCoin, { key: 'icon' }), h('span', { key: 'provider' }, snap.providerLabel)];
-        if (stateLabel === null && primary !== undefined) {
-          pillContent.push(h('span', { key: 'balance', className: 'dsbw-label' }, balanceText));
-          if (sessionSpent > 0) {
-            pillContent.push(h('span', { key: 'sep', className: 'dsbw-sep', 'aria-hidden': true }, '·'));
-            pillContent.push(
-              h('span', { key: 'spent', className: 'dsbw-delta', 'data-flash': snap.flash === null ? 'false' : 'true' }, '-' + spentText),
-            );
-          }
-        } else if (stateLabel === null) {
+        if (stateLabel !== null) {
+          pillContent.push(h('span', { key: 'state', className: 'dsbw-label' }, stateLabel));
+        } else if (primary === undefined && quota === null) {
           pillContent.push(h('span', { key: 'state', className: 'dsbw-label' }, '—'));
         } else {
-          pillContent.push(h('span', { key: 'state', className: 'dsbw-label' }, stateLabel));
+          if (primary !== undefined) {
+            pillContent.push(h('span', { key: 'balance', className: 'dsbw-label' }, balanceText));
+            if (sessionSpent > 0) {
+              pillContent.push(h('span', { key: 'sep', className: 'dsbw-sep', 'aria-hidden': true }, '·'));
+              pillContent.push(
+                h('span', { key: 'spent', className: 'dsbw-delta', 'data-flash': snap.flash === null ? 'false' : 'true' }, '-' + spentText),
+              );
+            }
+          }
+          if (quota !== null) {
+            if (primary !== undefined) {
+              pillContent.push(h('span', { key: 'sep-quota', className: 'dsbw-sep', 'aria-hidden': true }, '·'));
+            }
+            pillContent.push(
+              h(
+                'span',
+                { key: 'quota', className: 'dsbw-label', 'data-key-quota': 'true', title: quotaTitle },
+                t('label.keyQuotaPill') + ' ' + quotaText,
+              ),
+            );
+          }
         }
 
-        const rows = [];
+        const rows = [
+          h('dt', { key: 'dt-message' }, t('label.messageSpend')),
+          h('dd', { key: 'dd-message' }, snap.messageSpend ? formatSpent(snap.messageSpend.micro, snap.messageSpend.currency) : '—'),
+        ];
         const multiCurrency = snap.balances.length > 1;
         for (const wallet of snap.balances) {
           const suffix = multiCurrency ? ' ' + wallet.currency : '';
@@ -1125,6 +1258,37 @@ window.__ModuleLoader__.load({
             rows.push(
               h('dt', { key: 'dt-bonus-' + wallet.currency }, t('label.bonus') + suffix),
               h('dd', { key: 'dd-bonus-' + wallet.currency }, formatBalance(bonusMicro, wallet.currency)),
+            );
+          }
+        }
+        if (quota !== null) {
+          rows.push(
+            h('dt', { key: 'dt-keyquota' }, t('label.keyQuota')),
+            h(
+              'dd',
+              {
+                key: 'dd-keyquota',
+                'data-key-quota': 'true',
+                'data-low':
+                  quota.unlimited || quota.available === null || quota.unit !== 'USD'
+                    ? 'false'
+                    : toMicro(quota.available) < LOW_MICRO
+                      ? 'true'
+                      : 'false',
+              },
+              quotaText,
+            ),
+          );
+          if (!quota.unlimited && quota.granted !== null) {
+            rows.push(
+              h('dt', { key: 'dt-keyquota-granted' }, t('label.keyQuotaGranted')),
+              h('dd', { key: 'dd-keyquota-granted' }, formatQuotaAmount(quota.granted, quota.unit)),
+            );
+          }
+          if (!quota.unlimited && quota.used !== null) {
+            rows.push(
+              h('dt', { key: 'dt-keyquota-used' }, t('label.keyQuotaUsed')),
+              h('dd', { key: 'dd-keyquota-used' }, formatQuotaAmount(quota.used, quota.unit)),
             );
           }
         }
@@ -1193,7 +1357,7 @@ window.__ModuleLoader__.load({
                       : { left: pos.left + 'px', top: pos.top + 'px' },
                 },
                 h(
-                  'div',
+                  'header',
                   { className: 'dsbw-panel-title' },
                   h('span', { className: 'dsbw-title-label' }, h(IconCoin, {}), snap.providerLabel + ' · ' + t('panel.title')),
                   snap.updatedAt === null ? null : h('span', { className: 'dsbw-title-value' }, formatClock(snap.updatedAt)),
@@ -1206,7 +1370,7 @@ window.__ModuleLoader__.load({
                   ? h('p', { className: 'dsbw-error' }, (snap.message ?? t('error.failed')) + '')
                   : null,
                 h('p', { className: 'dsbw-note' }, t('note.spend')),
-                h('div', { className: 'dsbw-actions' }, actions),
+                h('footer', { className: 'dsbw-actions' }, actions),
               ),
             )
           : null;

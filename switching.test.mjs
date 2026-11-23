@@ -279,7 +279,7 @@ globalThis.fetch = async (url) => {
 const generic = await host.readUsage(discovered, { id: 'example', label: 'example', apiKeyEnv: 'EXAMPLE_API_KEY', baseURL: 'https://api.example.com' });
 assert.equal(generic.status, 200);
 assert.deepEqual(generic.body, { provider: 'example', label: 'example', balance: 5.5, unit: 'USD' });
-assert.ok(calls[0].endsWith('/user/balance'), 'probes the documented DeepSeek path first');
+assert.ok(calls[0].endsWith('/api/status') && calls[1].endsWith('/user/balance'));
 assert.ok(calls.includes('https://api.example.com/v1/usage'));
 
 // The winning endpoint is cached per origin, so polling does not re-probe every time.
@@ -291,6 +291,131 @@ globalThis.fetch = async () => ({ ok: false, status: 404, json: async () => ({})
 const missing = await host.readUsage(discovered, { id: 'nowhere', label: 'nowhere', apiKeyEnv: 'NOWHERE_API_KEY', baseURL: 'https://nowhere.example.com' });
 assert.equal(missing.status, 502);
 assert.match(missing.body.error, /no balance endpoint/i);
+
+// New API is selected by the configured origin, not by a provider nickname or /v1 suffix.
+fs.appendFileSync(path.join(dir, 'cordis.patch.yml'), '    bbbbk:\n      apiKeyEnv: CUSTOM_REF\n      baseURL: https://api.bbkkb.cfd/v1\n');
+const bb = await host.resolveSource('bbbbk', [dir]);
+const testCredential = 'mock-only';
+const quotaCtx = { credentials: { resolve: async ref => { assert.equal(ref, 'CUSTOM_REF'); return { value: testCredential }; } } };
+const quotaData = { total_available: 9527826, total_granted: 10000000, total_used: 472174, unlimited_quota: false };
+const conversion = { quota_per_unit: 500000, quota_display_type: 'USD' };
+async function quotaRead(data = quotaData, config = conversion, status = 200) {
+  const seen = [];
+  globalThis.fetch = async (url, opts) => {
+    seen.push(String(url));
+    const usage = String(url) === 'https://api.bbkkb.cfd/api/usage/token/';
+    assert.ok(usage || String(url) === 'https://api.bbkkb.cfd/api/status');
+    assert.ok(['error', 'manual'].includes(opts.redirect));
+    assert.equal(new Headers(opts.headers).get('Authorization'), usage ? 'Bearer ' + testCredential : null);
+    if (usage && status === 0) throw Error('mock network failure');
+    const code = usage ? status : 200;
+    return { ok: code === 200, status: code, json: async () => ({ success: true, data: usage ? data : config }) };
+  };
+  const result = await host.readUsage(quotaCtx, bb);
+  assert.ok(seen.includes('https://api.bbkkb.cfd/api/usage/token/'));
+  return result;
+}
+const unrelatedOrigin = 'https://api.bbkkb.cfd.example.org';
+const genericPaths = [];
+globalThis.fetch = async url => {
+  genericPaths.push(new URL(url).pathname);
+  return { ok: false, status: 404, json: async () => ({}) };
+};
+await host.readUsage(quotaCtx, { ...bb, baseURL: unrelatedOrigin + '/v1' });
+assert.deepEqual(genericPaths, ['/api/status', ...host.USAGE_PATHS], 'a similar hostname alone never selects New API');
+// Unknown deployment, no hard-coded id; the second poll must fetch only the current key quota.
+const autoSource = { ...bb, id: 'renamed', baseURL: 'https://new.example.org/v1' };
+const autoCalls = [];
+let autoCode = 401;
+let available = 0;
+globalThis.fetch = async (url, opts) => {
+  const pathname = new URL(url).pathname;
+  autoCalls.push([new URL(url).origin, pathname, new Headers(opts.headers).has('authorization'), opts.redirect]);
+  const publicRoute = pathname === '/api/status';
+  return { ok: publicRoute || autoCode === 200, status: publicRoute ? 200 : autoCode,
+    json: async () => ({ data: publicRoute ? conversion : { ...quotaData, total_available: available } }) };
+};
+assert.equal((await host.readUsage(quotaCtx, autoSource)).body.reason, 'auth');
+autoCode = 200;
+assert.equal((await host.readUsage(quotaCtx, autoSource)).body.keyQuota.available, 0);
+available = 500000;
+assert.equal((await host.readUsage(quotaCtx, autoSource)).body.keyQuota.available, 1);
+const statusCall = ['https://new.example.org', '/api/status', false, 'error'];
+const keyCall = ['https://new.example.org', '/api/usage/token/', true, 'error'];
+assert.deepEqual(autoCalls, [statusCall, keyCall, statusCall, keyCall, keyCall]);
+const quotaOut = await quotaRead();
+assert.equal(quotaOut.status, 200);
+assert.equal(quotaOut.body.keyQuota.unit, 'USD');
+assert.equal(quotaOut.body.keyQuota.available.toFixed(2), '19.06');
+assert.equal(quotaOut.body.keyQuota.granted, 20);
+assert.equal(quotaOut.body.keyQuota.used, 472174 / 500000);
+assert.equal(quotaOut.body.spent, undefined);
+assert.equal((await quotaRead({ ...quotaData, total_available: 0 })).body.keyQuota.available, 0);
+assert.equal((await quotaRead({ ...quotaData, unlimited_quota: true })).body.keyQuota.unlimited, true);
+for (const invalid of [{}, { ...conversion, quota_per_unit: 0 }, { ...conversion, quota_display_type: 'TOKENS' }]) {
+  const { body } = await quotaRead(quotaData, invalid);
+  assert.equal(body.keyQuota.unit, 'QUOTA');
+  assert.equal(body.keyQuota.available, quotaData.total_available);
+}
+const errors = [];
+for (const result of [await quotaRead(quotaData, conversion, 401), await quotaRead(quotaData, conversion, 404), await quotaRead(quotaData, conversion, 0), await quotaRead({ ...quotaData, total_available: null })]) {
+  assert.notEqual(result.status, 200);
+  assert.ok(result.body.error && !result.body.error.includes(testCredential));
+  errors.push(result.body.error);
+}
+assert.equal(new Set(errors).size, 4, 'auth, endpoint, network and missing quota must be distinguishable');
+
+// Exercise the client from a Host result through its store and actual open-panel render path.
+let quotaSnapshot;
+const renderHooks = {
+  createElement: (_type, _props, ...children) => children.flat(Infinity).filter(x => typeof x === 'string').join(' '),
+  useEffect() {}, useLayoutEffect() {}, useRef: current => ({ current }),
+  useCallback: fn => fn, useMemo: fn => fn(), useSyncExternalStore: () => quotaSnapshot,
+  useState: initial => [initial === false ? true : initial, () => {}], // open the popover
+};
+const renderSandbox = { ...sandbox, window: { ...sandbox.window, __ModuleLoader__: { load: ({ factory }) => factory(() => renderHooks) } } };
+vm.runInNewContext(source, renderSandbox);
+const widget = renderSandbox.window.testApi.makeWidget({ ...ctx, get: () => ({ getSnapshot: () => ({ active: 'zh-CN' }) }) });
+const qStore = api.createStore(ctx, 'bbbbk');
+qStore.setSession('quota-session');
+qStore.observeUsers(2);
+async function sampleKey(used) {
+  deferred = Promise.resolve({ ok: true, json: async () => ({ keyQuota: { available: 20-used, used, granted:20, unlimited:false, unit:'USD' } }) });
+  await qStore.requestRead('manual');
+}
+await sampleKey(1.55);
+assert.equal(qStore.getSnapshot().messageSpend, null);
+qStore.observeUsers(3);
+await sampleKey(1.56);
+assert.equal(qStore.getSnapshot().messageSpend.micro, 10000);
+await sampleKey(1.57);
+assert.equal(qStore.getSnapshot().messageSpend.micro, 20000);
+qStore.observeUsers(4);
+assert.equal(qStore.getSnapshot().messageSpend, null);
+await sampleKey(1.573);
+assert.equal(qStore.getSnapshot().messageSpend.micro, 3000);
+for (const [hostResult, expected] of [[quotaOut, /\$19\.06/], [await quotaRead({ ...quotaData, total_available: 0 }), /\$0\.00/], [await quotaRead({ ...quotaData, unlimited_quota: true }), /无限额/], [await quotaRead(quotaData, {}), /9,?527,?826/]]) {
+  deferred = Promise.resolve({ ok: true, json: async () => hostResult.body });
+  await qStore.requestRead('manual');
+  deferred = Promise.resolve({ ok: true, json: async () => ({ live: true, requests: 3, tokens: { inputTokens: 87, outputTokens: 12 } }) });
+  await qStore.refreshUsage();
+  quotaSnapshot = qStore.getSnapshot();
+  const text = widget({ sessionId: 'quota-session', useProjection: () => ({ provider: 'bbbbk' }) });
+  assert.match(text, /Key 剩余额度/);
+  assert.match(text, expected);
+  assert.match(text, /87 \/ 12/);
+  assert.match(text, /本对话请求数/);
+  assert.equal(quotaSnapshot.costSpent, null);
+  assert.equal(quotaSnapshot.balances.length, 0);
+  if (hostResult.body.keyQuota.unit === 'QUOTA') assert.doesNotMatch(text, /\$/);
+}
+const denied = await quotaRead(quotaData, conversion, 401);
+deferred = Promise.resolve({ ok: false, status: denied.status, json: async () => denied.body });
+await qStore.requestRead('manual');
+quotaSnapshot = qStore.getSnapshot();
+assert.match(widget({ sessionId: 'quota-session', useProjection: () => ({ provider: 'bbbbk' }) }), /401/);
+deferred = undefined;
+qStore.dispose();
 
 // A route whose key moved to a different ref must report the missing ref, not a fake zero.
 outcome = await host.readUsage({ credentials: { resolve: async () => undefined } }, { ...host.SOURCES.ds, id: 'ds' });

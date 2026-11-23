@@ -51,6 +51,9 @@ export const SOURCES = {
   },
 };
 
+// Verified New API deployments only. A /v1 model prefix does not identify a quota API.
+const NEW_API_ORIGINS = new Set(['https://api.bbkkb.cfd']);
+
 /** Endpoint paths documented by the provider families this plugin meets in practice. */
 export const USAGE_PATHS = [
   '/user/balance', // DeepSeek platform
@@ -109,6 +112,21 @@ export function extractBalance(payload) {
   const quota = numeric(payload.data?.quota);
   if (quota !== null) return { value: quota / 500000, unit: 'USD' };
   return null;
+}
+
+// New API quotas are key-scoped integers, not wallet balances or per-session charges.
+function keyQuotaFrom(payload, status) {
+  const data = payload?.data;
+  if (payload?.success === false || typeof data?.unlimited_quota !== 'boolean') return null;
+  const available = numeric(data.total_available);
+  if (!data.unlimited_quota && available === null) return null;
+  const divisor = numeric(status?.data?.quota_per_unit);
+  const money = status?.success !== false && divisor > 0 && status?.data?.quota_display_type === 'USD';
+  const scale = value => value !== null && money ? value / divisor : value;
+  return {
+    available: data.unlimited_quota ? null : scale(available), granted: scale(numeric(data.total_granted)),
+    used: scale(numeric(data.total_used)), unlimited: data.unlimited_quota, unit: money ? 'USD' : 'QUOTA',
+  };
 }
 
 const COST_KEYS = ['actual_cost', 'cost', 'total_cost', 'totalCost', 'spent', 'used_amount', 'used'];
@@ -194,6 +212,7 @@ export async function discoverUsage(apiKey, baseURL) {
     }
     if (!response.ok) {
       tried.push({ url, result: `HTTP ${response.status}` });
+      if ([401, 403].includes(response.status)) return { error: `configured key rejected (HTTP ${response.status})`, reason: 'auth', tried };
       continue;
     }
     let payload;
@@ -295,6 +314,41 @@ export async function resolveSource(providerId, dirs) {
 /** Remember which endpoint answered for which origin so polling stays cheap. */
 const discovered = new Map();
 
+// Only cache public conversion metadata after the private quota payload confirms the adapter.
+const confirmedQuotas = new Map();
+async function publicQuotaStatus(origin) {
+  try {
+    const response = await fetch(origin + '/api/status', {
+      headers: { Accept: 'application/json' }, redirect: 'error', signal: AbortSignal.timeout(4000),
+    });
+    if (!response.ok) return null;
+    const payload = await response.json();
+    const data = payload?.data;
+    if (payload?.success === false || !(numeric(data?.quota_per_unit) > 0) ||
+        typeof data?.quota_display_type !== 'string' || !data.quota_display_type.trim()) return null;
+    return { data: { quota_per_unit: data.quota_per_unit, quota_display_type: data.quota_display_type } };
+  } catch { return null; }
+}
+
+async function readKeyQuota(source, origin, key, status) {
+  const fail = (reason, message) => ({ status: 502, body: { provider: source.id, reason, error: source.label + ': ' + message } });
+  const get = (path, headers) => fetch(origin + path, {
+    headers: { Accept: 'application/json', ...headers }, redirect: 'error', signal: AbortSignal.timeout(15000),
+  });
+  let response;
+  try { response = await get('/api/usage/token/', { Authorization: 'Bearer ' + key }); }
+  catch { return fail('network', 'key quota request failed (network error or blocked redirect)'); }
+  const code = response.status;
+  if (code === 401 || code === 403) return fail('auth', 'configured key rejected (HTTP ' + code + ')');
+  if (code === 404 || code === 405) return fail('no-endpoint', 'key quota endpoint unavailable (HTTP ' + code + ')');
+  if (!response.ok) return fail('http', 'key quota HTTP ' + code);
+  let payload;
+  try { payload = await response.json(); } catch { return fail('invalid', 'quota response is not JSON'); }
+  const keyQuota = keyQuotaFrom(payload, status);
+  if (!keyQuota) return fail('fields', 'quota response missing or invalid: unlimited_quota / total_available');
+  return { status: 200, body: { provider: source.id, label: source.label, keyQuota } };
+}
+
 /**
  * Read one provider's remaining balance.
  * @returns {{ status: number, body: Record<string, unknown> }}
@@ -306,8 +360,22 @@ export async function readUsage(ctx, source) {
   } catch {
     credential = undefined;
   }
+  const origin = source.usageUrl === undefined ? baseOf(source) : null;
+  const cached = confirmedQuotas.get(origin);
+  const fresh = cached && cached.until > Date.now();
+  const status = origin && !discovered.has(origin) ? (fresh ? cached.status : await publicQuotaStatus(origin)) : null;
+  const quotaCandidate = NEW_API_ORIGINS.has(origin) || cached || status;
   if (credential?.value === undefined || credential.value === '') {
     return { status: 503, body: { error: `${source.apiKeyEnv} is not configured`, provider: source.id } };
+  }
+
+  if (quotaCandidate) {
+    const result = await readKeyQuota(source, origin, credential.value, status);
+    if (result.status === 200 && !fresh && !NEW_API_ORIGINS.has(origin)) {
+      confirmedQuotas.set(origin, { status, until: Date.now() + 10 * 60_000 });
+    }
+    if (result.body.reason === 'no-endpoint') confirmedQuotas.delete(origin);
+    return result; // Includes 401/403: never try the same key on additional paths.
   }
 
   let usageUrl = source.usageUrl;
@@ -324,10 +392,10 @@ export async function readUsage(ctx, source) {
       if (probe.error !== undefined) {
         return {
           status: 502,
-          body: { error: `${source.label} exposes no balance endpoint`, provider: source.id, tried: probe.tried },
+          body: { error: probe.reason === 'auth' ? probe.error : `${source.label}: no balance endpoint recognized`, provider: source.id, tried: probe.tried },
         };
       }
-      discovered.set(origin, probe);
+      discovered.set(origin, { usageUrl: probe.usageUrl });
       known = probe;
       usageUrl = probe.usageUrl;
     }
@@ -358,7 +426,7 @@ export async function readUsage(ctx, source) {
   }
 
   const raw = source.balanceOf?.(payload);
-  const found = raw === undefined ? (known ?? extractBalance(payload)) : { value: raw, unit: 'USD' };
+  const found = raw === undefined ? extractBalance(payload) : { value: raw, unit: 'USD' };
   if (found === null || found === undefined) {
     return { status: 502, body: { error: `${source.label} response has no numeric balance`, provider: source.id } };
   }

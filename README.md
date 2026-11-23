@@ -15,7 +15,9 @@
 
 上表是内置的常见供应商 ID。多个 ID 可能指向同一钱包但配置不同密钥（例如 `taffy`、`tafy`、`ds` 都走 `taffy.work`），插件按 ID 各自读取，因此改 ID 后余额不会静默变空。不同模型如果属于同一供应商，使用同一钱包。
 
-**不在表中的供应商会自动发现。** 插件从 `~/.dsh/profiles/*/cordis.patch.yml`（及 `cordis.yml`）读取该 ID 的 `baseURL`、`apiKeyEnv`，再用这把 Key 依次探测公开的余额接口：`/user/balance`、`/v1/usage`、`/v1/credits`、`/v1/dashboard/billing/subscription`、`/api/user/self`、`/v1/balance`、`/api/usage`、`/usage`。命中后就地解析余额（支持 `balance`、`remaining`、`total_balance`、`credits`、One-API 的 `quota/500000` 等常见字段与 `CNY`/`USD`）。同一个域名只探测一次并缓存结果，轮询时不再重复试探。
+**New API 的 Key 配额不是账户余额。** 对没有预设额度接口的模型路由，插件先不带凭据读取同源 `/api/status`；若站点声明有效的 `quota_per_unit` 和 `quota_display_type`，再用当前供应商的 Key 请求同源 `/api/usage/token/`，拒绝重定向。只有额度字段验证通过才记住该接口；每次都读取新额度，公开换算配置最多复用十分钟。`bbbbk` 等已知站点在状态页不可用时仍可查原始额度。只有站点明确给出 USD 显示类型和有效换算比例时才显示美元，否则保留原始额度单位。无限额单独显示。Key 的累计已用额度不计入本对话消耗；对话 token 和请求数仍来自会话日志。
+
+**其余不在表中的供应商会自动发现。** 插件从 `~/.dsh/profiles/*/cordis.patch.yml`（及 `cordis.yml`）读取该 ID 的 `baseURL`、`apiKeyEnv`，再用这把 Key 依次探测公开的余额接口：`/user/balance`、`/v1/usage`、`/v1/credits`、`/v1/dashboard/billing/subscription`、`/api/user/self`、`/v1/balance`、`/api/usage`、`/usage`。命中后就地解析余额（支持 `balance`、`remaining`、`total_balance`、`credits`、One-API 的 `quota/500000` 等常见字段与 `CNY`/`USD`）。同一个域名只探测一次并缓存结果，轮询时不再重复试探。
 
 注意两点：需要余额接口使用同一把 API Key 做 Bearer 认证（大多数中转/官方实现如此）；若该供应商只提供网页登录态才能看的额度，或未声明 `baseURL`/`apiKeyEnv`，后端会返回“没有可用余额接口 / 缺少凭据”，此时在 `index.js` 的 `SOURCES` 中显式加一行 `usageUrl` 即可。`client.js` 的 `PROVIDERS` 只影响显示名称，未列出的 ID 直接用 ID 本身作标签。
 
@@ -34,7 +36,7 @@ node scripts/probe-provider.mjs --id <provider-id> --base https://<base-url> --k
 在 DSH 的插件安装框输入：
 
 ```
-@breey05/dsh-balance-widget@1.4.5
+@breey05/dsh-balance-widget@1.4.9
 ```
 
 也可使用 GitHub 仓库地址 `git+https://github.com/BREEY05/dsh-balance-widget.git`，或安装本地目录。需要 DSH `>=0.2.1-rc.2 <0.3.0`。安装后刷新当前页面。
