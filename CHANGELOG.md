@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.4.10
+
+- Track the actual user message key, retain the billing baseline across page reloads and keep settlement checks independent of tool activity.
+
 ## 1.4.9
 
 - Show estimated spend for the latest user message using the change in reported billing, key usage or wallet balance. Shared-key activity can affect the estimate; without a baseline the panel shows a dash.

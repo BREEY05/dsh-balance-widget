@@ -31,7 +31,7 @@ node scripts/probe-provider.mjs --id <provider-id> --base https://<base-url> --k
 在 DSH 的插件安装框输入：
 
 ```
-@breey05/dsh-balance-widget@1.4.9
+@breey05/dsh-balance-widget@1.4.10
 ```
 
 也可使用 GitHub 仓库地址 `git+https://github.com/BREEY05/dsh-balance-widget.git`，或安装本地目录。需要 DSH `>=0.2.1-rc.2 <0.3.0`。安装后刷新当前页面。
@@ -42,7 +42,7 @@ node scripts/probe-provider.mjs --id <provider-id> --base https://<base-url> --k
 
 - 使用会话的 `modelSelection` projection 订阅模型选择；空白会话使用 Host 模型目录提供的默认供应商。
 - 每个���应商、每个会话分别保存消费记录，切换后不会把不同钱包的差额记作消费。切换期间迟到的请求不会污染新供应商数据。
-- 本条消息消耗按发送前后读到的差额估算，共用 Key 的其他请求可能被计入；没有基线时显示 `—`。
+- 本条消息消耗按发送前后读到的差额估算，共用 Key 的其他请求可能被计入；没有基线时显示等待计费数据。
 - 点余额入口查看余额、本对话消耗、今日消耗、本对话 token 与请求数，以及刷新按钮。
 - 本对话消耗优先取供应商返回的计费总额（如 sourcesdata 的 `usage.total.actual_cost`）：Host 记录进入该对话时的累计值，之后只把增量算给这段对话，因为充值、赠金失效或价格变化不应被误算成消耗。
 - 供应商不返回计费字段时，消耗回退为观察到的余额下降估算；同账号其他设备的使用可能被计入，切换后首次读取仅建立基线。

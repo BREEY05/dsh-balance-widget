@@ -49,6 +49,7 @@ window.__ModuleLoader__.load({
         'label.todaySpent': 'Today',
         'label.tokens': 'Tokens in / out',
         'label.requests': 'Requests this conversation',
+        'label.awaitMessage': 'Awaiting billing samples',
         'label.messageSpend': 'This message (estimated)',
         'label.keyQuota': 'Key remaining quota',
         'label.keyQuotaPill': 'Key',
@@ -78,6 +79,7 @@ window.__ModuleLoader__.load({
         'label.todaySpent': '今日消耗',
         'label.tokens': '输入 / 输出 token',
         'label.requests': '本对话请求数',
+        'label.awaitMessage': '待取得发送前后计费数据',
         'label.messageSpend': '本条消息消耗（估算）',
         'label.keyQuota': 'Key 剩余额度',
         'label.keyQuotaPill': 'Key',
@@ -499,14 +501,27 @@ window.__ModuleLoader__.load({
       let lastWallets = null;
 
       let userCount = null, sample = null, messageBase = null, messageSpend = null, generation = 0;
-      function observeUsers(n) {
-        if (userCount === n) return;
-        if (userCount === null) { userCount = n; return; } // Mount establishes history, not a new send.
-        messageBase = n === userCount + 1 ? sample : null;
+      const checkpointKey = () => 'dsbw.message.v1.' + JSON.stringify([provider, state.sessionId]);
+      function saveMessage() {
+        if (userCount === null || !state.sessionId) return;
+        try { window.sessionStorage.setItem(checkpointKey(), JSON.stringify([userCount, messageBase, sample])); } catch {}
+      }
+      function observeUsers(id) {
+        if (userCount === id || id == null) return;
+        if (userCount === null) {
+          userCount = id;
+          try {
+            const saved = JSON.parse(window.sessionStorage.getItem(checkpointKey()));
+            if (saved?.[0] === id) { messageBase = saved[1]; sample = saved[2]; }
+          } catch {}
+          return;
+        }
+        messageBase = sample;
         sample = null;
         messageSpend = null;
         generation++;
-        userCount = n;
+        userCount = id;
+        saveMessage();
         emit();
       }
 
@@ -703,9 +718,11 @@ window.__ModuleLoader__.load({
           const w = balances[0];
           sample = cost?.total != null ? {source:'bill', unit:cost.currency, value:cost.total}
             : q?.used != null && q.unit === 'USD' ? {source:'key', unit:q.unit, value:toMicro(q.used)}
+            : q?.available != null && q.unit === 'USD' ? {source:'key-left', unit:q.unit, value:-toMicro(q.available)}
             : w ? {source:'wallet', unit:w.currency, value:-w.micro} : null;
           messageSpend = sample && sample.value != null && messageBase && sample.source === messageBase.source && sample.unit === messageBase.unit && sample.value >= messageBase.value
             ? {currency:sample.unit, micro:sample.value - messageBase.value} : null;
+          saveMessage();
         }
         state.balances = balances;
         state.recharge = recharge;
@@ -1127,8 +1144,19 @@ window.__ModuleLoader__.load({
         }, [store]);
 
         const nodeCount = props.useChat === undefined ? 0 : props.useChat((chat) => chat.legacy.nodes.length);
-        const users = props.useChat?.(chat => chat.legacy.nodes.reduce((n, node) => n + ((node.kind ?? node.type) === 'user' ? 1 : 0), 0));
-        React.useEffect(() => { if (users !== undefined) store.observeUsers(users); }, [store, sessionId, users]);
+        const users = props.useChat?.(chat => {
+          for (let i = chat.order.length - 1; i >= 0; i--) {
+            const key = chat.order[i];
+            if (chat.nodes.get(key)?.kind === 'user') return String(key);
+          }
+          return ''; // Mounting an empty conversation still establishes the first baseline.
+        });
+        React.useEffect(() => {
+          if (users === undefined) return;
+          store.observeUsers(users);
+          const ids = BURST_MS.map(ms => window.setTimeout(() => store.requestRead('message'), ms));
+          return () => ids.forEach(id => window.clearTimeout(id));
+        }, [store, sessionId, users]);
         const lastNodeCount = React.useRef(nodeCount);
         React.useEffect(() => {
           if (nodeCount > lastNodeCount.current) {
@@ -1237,7 +1265,7 @@ window.__ModuleLoader__.load({
 
         const rows = [
           h('dt', { key: 'dt-message' }, t('label.messageSpend')),
-          h('dd', { key: 'dd-message' }, snap.messageSpend ? formatSpent(snap.messageSpend.micro, snap.messageSpend.currency) : '—'),
+          h('dd', { key: 'dd-message' }, snap.messageSpend ? formatSpent(snap.messageSpend.micro, snap.messageSpend.currency) : (snap.phase !== 'ready' ? t('note.loading') : t('label.awaitMessage'))),
         ];
         const multiCurrency = snap.balances.length > 1;
         for (const wallet of snap.balances) {
