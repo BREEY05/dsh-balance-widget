@@ -49,6 +49,7 @@ window.__ModuleLoader__.load({
         'label.todaySpent': 'Today',
         'label.tokens': 'Tokens in / out',
         'label.requests': 'Requests this conversation',
+        'label.partial': ' (partial)',
         'label.awaitMessage': 'Awaiting billing samples',
         'label.messageSpend': 'This message (estimated)',
         'label.keyQuota': 'Key remaining quota',
@@ -79,7 +80,8 @@ window.__ModuleLoader__.load({
         'label.todaySpent': '今日消耗',
         'label.tokens': '输入 / 输出 token',
         'label.requests': '本对话请求数',
-        'label.awaitMessage': '待取得发送前后计费数据',
+        'label.partial': '（部分）',
+        'label.awaitMessage': '等待计费读数',
         'label.messageSpend': '本条消息消耗（估算）',
         'label.keyQuota': 'Key 剩余额度',
         'label.keyQuotaPill': 'Key',
@@ -721,7 +723,9 @@ window.__ModuleLoader__.load({
             : q?.available != null && q.unit === 'USD' ? {source:'key-left', unit:q.unit, value:-toMicro(q.available)}
             : w ? {source:'wallet', unit:w.currency, value:-w.micro} : null;
           messageSpend = sample && sample.value != null && messageBase && sample.source === messageBase.source && sample.unit === messageBase.unit && sample.value >= messageBase.value
-            ? {currency:sample.unit, micro:sample.value - messageBase.value} : null;
+            ? {currency:sample.unit, micro:sample.value - messageBase.value, partial:messageBase.partial === true} : null;
+          // Without a pre-send reading only later changes can be attributed to this message.
+          if (!messageBase && sample && userCount) messageBase = { ...sample, partial:true };
           saveMessage();
         }
         state.balances = balances;
@@ -1265,7 +1269,7 @@ window.__ModuleLoader__.load({
 
         const rows = [
           h('dt', { key: 'dt-message' }, t('label.messageSpend')),
-          h('dd', { key: 'dd-message' }, snap.messageSpend ? formatSpent(snap.messageSpend.micro, snap.messageSpend.currency) : (snap.phase !== 'ready' ? t('note.loading') : t('label.awaitMessage'))),
+          h('dd', { key: 'dd-message' }, snap.messageSpend ? formatSpent(snap.messageSpend.micro, snap.messageSpend.currency) + (snap.messageSpend.partial ? t('label.partial') : '') : (snap.phase !== 'ready' ? t('note.loading') : t('label.awaitMessage'))),
         ];
         const multiCurrency = snap.balances.length > 1;
         for (const wallet of snap.balances) {

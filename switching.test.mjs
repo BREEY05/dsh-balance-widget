@@ -394,6 +394,13 @@ qStore.observeUsers(4);
 assert.equal(qStore.getSnapshot().messageSpend, null);
 await sampleKey(1.573);
 assert.equal(qStore.getSnapshot().messageSpend.micro, 3000);
+qStore.observeUsers('rapid-a');
+qStore.observeUsers('rapid-b');
+await sampleKey(1.61);
+assert.equal(qStore.getSnapshot().messageSpend, null);
+await sampleKey(1.615);
+assert.equal(qStore.getSnapshot().messageSpend.micro, 5000);
+assert.equal(qStore.getSnapshot().messageSpend.partial, true);
 for (const [hostResult, expected] of [[quotaOut, /\$19\.06/], [await quotaRead({ ...quotaData, total_available: 0 }), /\$0\.00/], [await quotaRead({ ...quotaData, unlimited_quota: true }), /无限额/], [await quotaRead(quotaData, {}), /9,?527,?826/]]) {
   deferred = Promise.resolve({ ok: true, json: async () => hostResult.body });
   await qStore.requestRead('manual');

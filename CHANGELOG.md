@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.4.11
+
+- Recover when consecutive messages arrive before the next billing sample. When no pre-send baseline exists, label only the observed change as partial.
+
 ## 1.4.10
 
 - Track the actual user message key, retain the billing baseline across page reloads and keep settlement checks independent of tool activity.

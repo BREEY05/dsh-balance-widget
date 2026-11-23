@@ -1,6 +1,6 @@
 {
   "name": "@breey05/dsh-balance-widget",
-  "version": "1.4.10",
+  "version": "1.4.11",
   "scripts": {
     "test": "node switching.test.mjs"
   },
